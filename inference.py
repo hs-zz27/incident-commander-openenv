@@ -49,7 +49,7 @@ from server.tasks import list_tasks
 API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.openai.com/v1")
 MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-4o-mini")
 # HF_TOKEN is the primary key per hackathon spec; OPENAI_API_KEY as fallback
-API_KEY = os.environ.get("HF_TOKEN") or os.environ.get("OPENAI_API_KEY") or ""
+API_KEY = os.environ.get("HF_TOKEN") or os.environ.get("OPENAI_API_KEY") or "AIzaSyDyygKcNXZBMwuRY4MhAGX0B_ZzERKCSPg"
 
 BENCHMARK_NAME = "incident_commander_env"
 MAX_RETRIES = 3
@@ -313,6 +313,7 @@ def run_task(task_name: str, client: OpenAI) -> None:
     env = IncidentCommanderEnvironment()
     rewards: List[float] = []
     success = False
+    score = 0.0
     steps = 0
     action_history: List[str] = []
 
@@ -399,7 +400,7 @@ def run_task(task_name: str, client: OpenAI) -> None:
         rewards_str = ",".join(f"{r:.2f}" for r in rewards)
         print(
             f"[END] success={str(success).lower()} steps={steps} "
-            f"score={score:.3f} rewards={rewards_str}",
+            f"score={score:.2f} rewards={rewards_str}",
             flush=True,
         )
 

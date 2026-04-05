@@ -8,6 +8,8 @@ All state transitions are deterministic given the same seed and action sequence.
 from __future__ import annotations
 
 import copy
+import random
+import uuid
 from typing import Any, Dict, List, Optional
 
 from .models import ServiceState, ServiceStatusEnum
@@ -75,7 +77,9 @@ def generate_logs(
         return [f"[ERROR] Service '{service_name}' not found in cluster."]
 
     logs: List[str] = []
-    ts = f"2026-04-03T10:{step:02d}:00Z"
+    # Primary telemetry logs occur early in the step window
+    sec = random.randint(0, 10)
+    ts = f"2026-04-03T10:{step:02d}:{sec:02d}Z"
 
     if svc.status == ServiceStatusEnum.DOWN:
         logs.append(f"[{ts}] CRITICAL {service_name}: Service is not responding — health check failed.")
@@ -135,6 +139,19 @@ def generate_logs(
             logs.append(f"[{ts}] WARN cache: Serving stale auth tokens — TTL not expired but tokens may be invalid.")
             logs.append(f"[{ts}] INFO cache: Hit rate: 78% — some requests bypass cache and hit auth directly.")
 
+    # Inject contextual noise (benign traffic) to test agent filtering
+    num_noise = random.randint(6, 12)
+    for _ in range(num_noise):
+        n_sec = random.randint(0, 59)
+        n_ts = f"2026-04-03T10:{step:02d}:{n_sec:02d}Z"
+        trace_id = str(uuid.uuid4())[:8]
+        status = random.choice([200, 200, 201, 204, 304, 404])
+        ms = random.randint(15, 120)
+        logs.append(f"[{n_ts}] INFO {service_name}: [trace={trace_id}] Handled incoming request -> HTTP {status} ({ms}ms)")
+
+    # Sort lexicographically by timestamp string to interleave naturally
+    logs.sort()
+
     return logs
 
 
@@ -148,19 +165,28 @@ def generate_metrics(
     if svc is None:
         return {"error": f"Service '{service_name}' not found"}
 
+    # Add stochastic jitter to metrics
+    j_factor = random.uniform(0.95, 1.05)
+    j_add = random.uniform(-1.0, 1.0)
+    
+    # Degraded/down services experience chaotic jitter
+    if svc.status != ServiceStatusEnum.HEALTHY:
+        j_factor = random.uniform(0.8, 1.4)
+        j_add = random.uniform(-5.0, 15.0)
+
     metrics: Dict[str, Any] = {
         "service": service_name,
         "status": svc.status.value,
-        "error_rate": round(svc.error_rate, 4),
-        "latency_p50_ms": round(svc.latency_ms * 0.6, 1),
-        "latency_p95_ms": round(svc.latency_ms, 1),
-        "latency_p99_ms": round(svc.latency_ms * 1.4, 1),
-        "cpu_percent": round(svc.cpu_percent, 1),
-        "memory_percent": round(svc.memory_percent, 1),
+        "error_rate": round(min(1.0, max(0.0, svc.error_rate * j_factor)), 4),
+        "latency_p50_ms": round(max(1.0, svc.latency_ms * 0.6 * j_factor + j_add), 1),
+        "latency_p95_ms": round(max(1.0, svc.latency_ms * j_factor + j_add), 1),
+        "latency_p99_ms": round(max(1.0, svc.latency_ms * 1.4 * j_factor + j_add * 2), 1),
+        "cpu_percent": round(min(100.0, max(0.0, svc.cpu_percent + random.gauss(0, 2.0))), 1),
+        "memory_percent": round(min(100.0, max(0.0, svc.memory_percent + random.gauss(0, 0.5))), 1),
         "instances": svc.instances,
         "version": svc.version,
-        "requests_per_second": 500 if svc.status == ServiceStatusEnum.HEALTHY else (200 if svc.status == ServiceStatusEnum.DEGRADED else 0),
-        "open_connections": 50 if svc.status == ServiceStatusEnum.HEALTHY else (180 if svc.status == ServiceStatusEnum.DEGRADED else 0),
+        "requests_per_second": int((500 if svc.status == ServiceStatusEnum.HEALTHY else (200 if svc.status == ServiceStatusEnum.DEGRADED else 0)) * j_factor),
+        "open_connections": int((50 if svc.status == ServiceStatusEnum.HEALTHY else (180 if svc.status == ServiceStatusEnum.DEGRADED else 0)) * j_factor),
         "dependencies": DEPENDENCY_GRAPH.get(service_name, []),
         "dependents": REVERSE_DEPS.get(service_name, []),
     }
