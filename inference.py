@@ -52,12 +52,11 @@ try:
 except ImportError:
     pass
 
-API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.openai.com/v1")
-MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-4o-mini")
-HF_TOKEN = os.environ.get("HF_TOKEN")
+IMAGE_NAME = os.getenv("IMAGE_NAME")  # If you are using docker image
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 
-# Optional — if you use from_docker_image():
-LOCAL_IMAGE_NAME = os.environ.get("LOCAL_IMAGE_NAME")
+API_BASE_URL = os.getenv("API_BASE_URL") or "https://api.openai.com/v1"
+MODEL_NAME = os.getenv("MODEL_NAME") or "gpt-4o-mini"
 
 BENCHMARK_NAME = "incident_commander_env"
 MAX_RETRIES = 3
@@ -408,7 +407,7 @@ def run_task(task_name: str, client: OpenAI) -> None:
         rewards_str = ",".join(f"{r:.2f}" for r in rewards)
         print(
             f"[END] success={str(success).lower()} steps={steps} "
-            f"score={score:.2f} rewards={rewards_str}",
+            f"score={score:.3f} rewards={rewards_str}",
             flush=True,
         )
 
@@ -419,13 +418,10 @@ def run_task(task_name: str, client: OpenAI) -> None:
 
 def main():
     """Run inference across all three tasks."""
-    if not HF_TOKEN:
-        print("WARNING: No HF_TOKEN set. Set HF_TOKEN environment variable.", file=sys.stderr)
+    if not API_KEY:
+        print("WARNING: No HF_TOKEN or API_KEY set.", file=sys.stderr)
 
-    client = OpenAI(
-        api_key=HF_TOKEN,
-        base_url=API_BASE_URL,
-    )
+    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
     tasks = list_tasks()
     for task_name in tasks:
