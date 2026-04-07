@@ -1,3 +1,14 @@
+---
+title: Incident Commander Environment
+emoji: 🚨
+colorFrom: red
+colorTo: yellow
+sdk: docker
+app_port: 7860
+pinned: false
+license: mit
+---
+
 # 🚨 Enterprise Incident Commander Environment
 
 An **OpenEnv-compliant** reinforcement learning environment where an AI agent plays the role of an **Incident Commander** for a microservices production system during a live outage.

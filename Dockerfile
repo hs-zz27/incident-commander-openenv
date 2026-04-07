@@ -15,6 +15,8 @@ COPY inference.py ./
 COPY evaluate.py ./
 COPY README.md ./
 COPY __init__.py ./
+COPY client.py ./
+COPY models.py ./
 
 # Install the package and all dependencies via pyproject.toml
 RUN pip install --no-cache-dir -e .
