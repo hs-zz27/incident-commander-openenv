@@ -46,6 +46,12 @@ from server.tasks import list_tasks
 # Configuration
 # ---------------------------------------------------------------------------
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.openai.com/v1")
 MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-4o-mini")
 # HF_TOKEN is the primary key per hackathon spec; OPENAI_API_KEY as fallback

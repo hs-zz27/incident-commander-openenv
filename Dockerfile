@@ -19,12 +19,17 @@ COPY __init__.py ./
 # Install the package and all dependencies via pyproject.toml
 RUN pip install --no-cache-dir -e .
 
-# Expose port
-EXPOSE 8000
+# Environment variables (HF Spaces compatible)
+ENV HOST=0.0.0.0
+ENV PORT=7860
+ENV WORKERS=1
+
+# Expose both ports (8000 for local, 7860 for HF Spaces)
+EXPOSE 7860 8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${PORT}/health')" || exit 1
 
-# Run the FastAPI server
-CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run the FastAPI server — HF Spaces sets PORT=7860
+CMD uvicorn server.app:app --host $HOST --port $PORT --workers $WORKERS
