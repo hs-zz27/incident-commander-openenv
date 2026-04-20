@@ -12,7 +12,11 @@ COPY pyproject.toml ./
 COPY server/ ./server/
 COPY openenv.yaml ./
 COPY inference.py ./
+COPY multi_agent_inference.py ./
 COPY evaluate.py ./
+COPY run_baselines.py ./
+COPY plot_baselines.py ./
+COPY train_grpo.py ./
 COPY README.md ./
 COPY __init__.py ./
 COPY client.py ./

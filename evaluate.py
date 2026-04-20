@@ -54,34 +54,47 @@ EXPERT_STRATEGIES: Dict[str, List[IncidentAction]] = {
         IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="payments"),
         IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="checkout"),
     ],
+    "chaos_cascade": [
+        IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="database"),
+        IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="checkout"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="database"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="auth"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="payments"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="checkout"),
+        # After step 8 chaos injection, notification goes down
+        IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="notification"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="notification"),
+        # May need extra restarts for dependents of notification
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="payments"),
+    ],
+    "multi_root_cause": [
+        IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="auth"),
+        IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="database"),
+        IncidentAction(action_type=ActionType.ROLLBACK, service_name="auth"),
+        IncidentAction(action_type=ActionType.SCALE_SERVICE, service_name="database"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="database"),
+        IncidentAction(action_type=ActionType.CLEAR_CACHE),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="payments"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="checkout"),
+    ],
 }
 
 # Naive strategy: just restart everything (for comparison)
+_NAIVE_RESTART_ALL = [
+    IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="database"),
+    IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="cache"),
+    IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="auth"),
+    IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="notification"),
+    IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="payments"),
+    IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="checkout"),
+]
+
 NAIVE_STRATEGIES: Dict[str, List[IncidentAction]] = {
-    "single_service_failure": [
-        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="database"),
-        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="cache"),
-        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="auth"),
-        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="notification"),
-        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="payments"),
-        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="checkout"),
-    ],
-    "cascading_failure": [
-        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="database"),
-        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="cache"),
-        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="auth"),
-        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="notification"),
-        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="payments"),
-        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="checkout"),
-    ],
-    "hidden_root_cause": [
-        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="auth"),
-        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="payments"),
-        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="checkout"),
-        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="database"),
-        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="cache"),
-        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="notification"),
-    ],
+    "single_service_failure": list(_NAIVE_RESTART_ALL),
+    "cascading_failure": list(_NAIVE_RESTART_ALL),
+    "hidden_root_cause": list(_NAIVE_RESTART_ALL),
+    "chaos_cascade": list(_NAIVE_RESTART_ALL) + list(_NAIVE_RESTART_ALL),  # double pass
+    "multi_root_cause": list(_NAIVE_RESTART_ALL) + list(_NAIVE_RESTART_ALL),
 }
 
 # Do-nothing strategy (baseline floor — always times out)
@@ -188,13 +201,17 @@ def run_full_evaluation(
 ) -> None:
     """Run the complete evaluation suite."""
     tasks = list_tasks()
+    # Only evaluate tasks that have defined expert strategies
+    # (random_incident is non-deterministic and has no fixed expert strategy)
+    evaluable_tasks = [t for t in tasks if t in EXPERT_STRATEGIES]
     if task_filter:
         task_map = {"easy": "single_service_failure", "medium": "cascading_failure", "hard": "hidden_root_cause"}
         selected = task_map.get(task_filter, task_filter)
-        tasks = [t for t in tasks if t == selected]
-        if not tasks:
+        evaluable_tasks = [t for t in evaluable_tasks if t == selected]
+        if not evaluable_tasks:
             print(f"Error: Unknown task '{task_filter}'")
             sys.exit(1)
+    tasks = evaluable_tasks
 
     print("=" * 70)
     print("  INCIDENT COMMANDER ENVIRONMENT — EVALUATION REPORT")
@@ -255,7 +272,9 @@ def run_full_evaluation(
     print("└──────────────────────────────────────────────────────────────────┘")
 
     all_deterministic = True
-    for task_name in tasks:
+    # Only check determinism for non-random tasks
+    determinism_tasks = [t for t in tasks if t != "random_incident"]
+    for task_name in determinism_tasks:
         ok = check_determinism(task_name, EXPERT_STRATEGIES[task_name], runs=5)
         icon = "✅" if ok else "❌"
         print(f"  {task_name:30s}  {icon} {'DETERMINISTIC' if ok else 'NON-DETERMINISTIC'}")
@@ -359,7 +378,7 @@ def run_full_evaluation(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate Incident Commander Environment")
-    parser.add_argument("--task", choices=["easy", "medium", "hard"], help="Run a single task")
+    parser.add_argument("--task", choices=["easy", "medium", "hard", "chaos_cascade", "multi_root_cause"], help="Run a single task")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show detailed step output")
     args = parser.parse_args()
 

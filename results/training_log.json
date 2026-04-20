@@ -1,0 +1,17 @@
+[
+  {
+    "step": 1,
+    "mean_reward": 0.41133333333333333,
+    "task": "cascading_failure"
+  },
+  {
+    "step": 2,
+    "mean_reward": 0.118,
+    "task": "hidden_root_cause"
+  },
+  {
+    "step": 3,
+    "mean_reward": 0.013333333333333336,
+    "task": "single_service_failure"
+  }
+]

@@ -266,4 +266,4 @@ class TestW12OpenEnvYaml:
         assert "description" in data
         assert "inference_script" in data
         assert "tasks" in data
-        assert len(data["tasks"]) == 3
+        assert len(data["tasks"]) >= 3

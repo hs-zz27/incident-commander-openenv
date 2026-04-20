@@ -8,6 +8,7 @@ All state transitions are deterministic given the same seed and action sequence.
 from __future__ import annotations
 
 import copy
+import random
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -36,6 +37,7 @@ from .services import (
 )
 from .tasks import TaskDefinition, get_task, list_tasks
 from .grader import compute_step_reward, grade_episode
+from .chaos import ChaosAgent
 
 
 class IncidentCommanderEnvironment:
@@ -58,6 +60,10 @@ class IncidentCommanderEnvironment:
         self._prev_health: float = 0.0
         self._inspected_services: set = set()
         self._timeline: List[Dict[str, Any]] = []
+        self._chaos_agent: ChaosAgent = ChaosAgent()
+        self._chaos_mode: bool = False
+        self._chaos_rng: random.Random = random.Random()
+        self._last_chaos_event: Optional[str] = None
 
     # ------------------------------------------------------------------
     # reset()
@@ -68,21 +74,29 @@ class IncidentCommanderEnvironment:
         seed: Optional[int] = None,
         episode_id: Optional[str] = None,
         task_name: Optional[str] = None,
+        chaos_mode: bool = False,
         **kwargs: Any,
     ) -> IncidentObservation:
         """
         Reset the environment to start a new episode.
 
         Args:
-            seed: Random seed (unused — environment is fully deterministic).
+            seed: Random seed for reproducibility. For random_incident tasks,
+                  pass None for a fresh random scenario each time.
             episode_id: Optional episode identifier.
             task_name: Name of the task to run. Defaults to "single_service_failure".
+            chaos_mode: If True, enables background chaos injection during the episode.
 
         Returns:
             Initial observation of the incident scenario.
         """
         task_name = task_name or "single_service_failure"
-        self._task = get_task(task_name)
+
+        # For random_incident, pass seed through to get_task for parameterized generation
+        if task_name == "random_incident":
+            self._task = get_task(task_name, seed=seed)
+        else:
+            self._task = get_task(task_name)
 
         # Deep-copy initial services so we don't mutate the task definition
         self._services = {
@@ -96,6 +110,13 @@ class IncidentCommanderEnvironment:
         self._last_action_error = None
         self._inspected_services = set()
         self._prev_health = compute_health_score(self._services)
+        self._last_chaos_event = None
+
+        # Initialize chaos agent
+        self._chaos_mode = chaos_mode
+        self._chaos_agent = ChaosAgent()
+        self._chaos_agent.reset()
+        self._chaos_rng = random.Random(seed if seed is not None else random.randint(0, 99999))
         self._timeline = [{
             "step": 0,
             "event": "incident_detected",
@@ -235,6 +256,29 @@ class IncidentCommanderEnvironment:
 
         self._actions_history.append(action_str)
 
+        # --- Chaos injection (before computing reward) ---
+        self._last_chaos_event = None
+        if self._chaos_mode:
+            chaos_result = self._chaos_agent.maybe_inject(
+                step=self._state.step_count,
+                current_services=self._services,
+                rng=self._chaos_rng,
+                inspected_services=self._inspected_services,
+            )
+            if chaos_result:
+                self._last_chaos_event = chaos_result
+                self._services = propagate_dependencies(self._services, self._task.name)
+
+        # Scripted chaos for chaos_cascade task: notification fails at step 8
+        if (
+            self._task.name == "chaos_cascade"
+            and self._state.step_count == 8
+            and "notification" not in self._chaos_agent.injected_services
+        ):
+            self._chaos_agent.force_inject("notification", self._services, "oom_crash")
+            self._last_chaos_event = "notification"
+            self._services = propagate_dependencies(self._services, self._task.name)
+
         # Compute health and reward
         curr_health = compute_health_score(self._services)
 
@@ -262,8 +306,12 @@ class IncidentCommanderEnvironment:
             steps_taken=self._state.step_count,
         )
 
-        # Record timeline event
+        # Chaos survival bonus: if agent handled chaos without further health loss
         health_delta = curr_health - self._prev_health
+        if self._last_chaos_event and health_delta >= 0:
+            reward += 0.05
+
+        # Record timeline event
         event = {
             "step": self._state.step_count,
             "event": action_str,
@@ -271,6 +319,8 @@ class IncidentCommanderEnvironment:
             "health_delta": round(health_delta, 4),
             "reward": round(reward, 4),
         }
+        if self._last_chaos_event:
+            event["chaos_event"] = self._last_chaos_event
         if self._last_action_error:
             event["error"] = self._last_action_error
         if self._state.is_resolved:
@@ -304,6 +354,11 @@ class IncidentCommanderEnvironment:
         if self._state is None:
             return IncidentState(episode_id=None, step_count=0)
         return self._state
+
+    @property
+    def timeline(self) -> List[Dict[str, Any]]:
+        """Return the incident timeline for the current episode."""
+        return list(self._timeline)
 
     # ------------------------------------------------------------------
     # grade() — final scoring
@@ -373,10 +428,15 @@ class IncidentCommanderEnvironment:
             "resolved": SeverityLevel.RESOLVED,
         }
 
+        # Build metadata with optional chaos event info
+        obs_metadata: Dict[str, Any] = {}
+        if self._last_chaos_event:
+            obs_metadata["new_chaos_event"] = self._last_chaos_event
+
         return IncidentObservation(
             done=self._is_done,
             reward=round(reward, 4),
-            metadata={},
+            metadata=obs_metadata,
             services={k: v.model_copy() for k, v in self._services.items()},
             alerts=alerts,
             logs=logs,

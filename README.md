@@ -49,7 +49,7 @@ pip install -e ".[dev]"
 
 ```bash
 python -m pytest tests/ -q
-# Expected: 128 passed
+# Expected: 134 passed
 ```
 
 ### 3. Run Evaluation (no API key needed)
@@ -199,6 +199,36 @@ Each observation contains:
 | Fix           | Rollback auth → clear cache → restart payments → restart checkout |
 | Optimal Steps | 6–8 (inspect several services → rollback → clear cache → restart) |
 
+### Task 4: Chaos Cascade *(Hard)*
+
+| Property      | Value                                              |
+|---------------|----------------------------------------------------|
+| Name          | `chaos_cascade`                                    |
+| Max Steps     | 35                                                 |
+| Root Cause    | Database crash + surprise notification failure at step 8 |
+| Fix           | Fix DB → restart dependents → handle chaos → fix notification |
+| Optimal Steps | 8–10                                               |
+
+### Task 5: Multi-Root Cause *(Expert)*
+
+| Property      | Value                                              |
+|---------------|----------------------------------------------------|
+| Name          | `multi_root_cause`                                 |
+| Max Steps     | 40                                                 |
+| Root Cause    | Auth bad deploy AND database CPU spike simultaneously |
+| Fix           | Rollback auth + scale DB + restart DB → clear cache → restart dependents |
+| Optimal Steps | 8–10                                               |
+
+### Task 6: Random Incident *(Variable)*
+
+| Property      | Value                                              |
+|---------------|----------------------------------------------------|
+| Name          | `random_incident`                                  |
+| Max Steps     | 15–25 (varies)                                     |
+| Root Cause    | Randomized root service, failure mode, and downstream effects |
+| Fix           | Varies per episode — agent must diagnose from scratch |
+| Optimal Steps | Varies                                             |
+
 ---
 
 ## 💎 Reward Design
@@ -244,6 +274,7 @@ Each observation contains:
 | GET | `/grade` | Get episode grade/score |
 | GET | `/timeline` | Incident timeline for post-mortem |
 | GET | `/info` | Environment metadata & capabilities |
+| GET | `/dashboard` | Live auto-refreshing health dashboard |
 
 ### Example Usage
 
@@ -319,6 +350,9 @@ python inference.py
 | single_service_failure  | 0.60 – 0.95 |
 | cascading_failure       | 0.40 – 1.00 |
 | hidden_root_cause       | 0.25 – 0.85 |
+| chaos_cascade           | 0.30 – 0.96 |
+| multi_root_cause        | 0.35 – 1.00 |
+| random_incident         | 0.40 – 0.90 |
 
 ### Stdout Format
 
@@ -354,21 +388,28 @@ python evaluate.py
 ├── README.md              # This file
 ├── guide.md               # Detailed beginner-friendly guide
 ├── inference.py           # Baseline LLM inference script
+├── multi_agent_inference.py # Multi-specialist agent architecture
 ├── evaluate.py            # Self-contained evaluation suite
+├── run_baselines.py       # Baseline benchmark runner
+├── plot_baselines.py      # Reward curve plotting
+├── train_grpo.py          # GRPO training script
+├── hf_blog_draft.md       # HuggingFace blog draft
 ├── Dockerfile             # Container for HF Spaces
 ├── __init__.py            # Package exports
 ├── server/
 │   ├── __init__.py
 │   ├── models.py          # Pydantic models (Action, Observation, State)
 │   ├── services.py        # Microservice graph & simulation
-│   ├── tasks.py           # 3 task definitions
+│   ├── tasks.py           # 6 task definitions + random generator
 │   ├── grader.py          # Scoring & reward calculation
+│   ├── chaos.py           # ChaosAgent — background failure injection
 │   ├── environment.py     # Core environment logic
-│   └── app.py             # FastAPI HTTP server
+│   └── app.py             # FastAPI HTTP server (+ /dashboard)
+├── results/               # Baseline results & charts
 └── tests/
     ├── conftest.py        # Shared fixtures
     ├── test_environment.py    # Core tests (48)
-    ├── test_edge_cases.py     # Edge case tests (62)
+    ├── test_edge_cases.py     # Edge case tests (68)
     └── test_weakness_fixes.py # Regression tests (18)
 ```
 

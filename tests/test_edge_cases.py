@@ -324,7 +324,7 @@ class TestTaskDefinitions:
         task = get_task(task_name)
         assert task.name == task_name
         assert task.description
-        assert task.difficulty in ("easy", "medium", "hard")
+        assert task.difficulty in ("easy", "medium", "hard", "expert")
         assert task.max_steps > 0
         assert task.root_cause_service in ALL_SERVICES
         assert task.root_cause_description

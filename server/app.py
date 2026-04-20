@@ -36,6 +36,7 @@ class ResetRequest(BaseModel):
     seed: Optional[int] = None
     episode_id: Optional[str] = None
     task_name: Optional[str] = None
+    chaos_mode: bool = False
 
 
 class ResetResponse(BaseModel):
@@ -127,6 +128,7 @@ def create_incident_app() -> FastAPI:
                     seed=req.seed,
                     episode_id=req.episode_id,
                     task_name=req.task_name,
+                    chaos_mode=req.chaos_mode,
                 )
                 _is_initialised = True
                 obs_dict = obs.model_dump()
@@ -221,6 +223,95 @@ def create_incident_app() -> FastAPI:
             ],
             "tasks": tasks_info,
         }
+    # ---- Live Health Dashboard (T2-3) ----
+    @app.get("/dashboard")
+    async def dashboard():
+        """Live auto-refreshing HTML dashboard for demo presentations."""
+        from fastapi.responses import HTMLResponse
+        state = env.state
+        services = state.services
+        from .services import compute_health_score
+        health = compute_health_score(services) if services else 0.0
+
+        rows = ""
+        for name in ["database", "cache", "auth", "notification", "payments", "checkout"]:
+            svc = services.get(name)
+            if svc is None:
+                continue
+            status = svc.status.value
+            if status == "healthy":
+                color = "#22c55e"
+                bg = "#052e16"
+            elif status == "degraded":
+                color = "#eab308"
+                bg = "#422006"
+            else:
+                color = "#ef4444"
+                bg = "#450a0a"
+            health_pct = 0.0
+            if status == "healthy":
+                health_pct = max(0, (1.0 - svc.error_rate)) * 100
+            elif status == "degraded":
+                health_pct = max(0, (0.5 - svc.error_rate)) * 100
+            rows += f"""
+            <tr>
+                <td style="font-weight:600;">{name}</td>
+                <td style="background:{bg}; color:{color}; text-align:center; border-radius:4px; padding:4px 8px;">
+                    {status.upper()}
+                </td>
+                <td>{health_pct:.0f}%</td>
+                <td>{svc.error_rate*100:.1f}%</td>
+                <td>{svc.latency_ms:.0f} ms</td>
+                <td>{svc.cpu_percent:.0f}%</td>
+                <td>{svc.instances}</td>
+                <td>{svc.version}</td>
+            </tr>"""
+
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta http-equiv="refresh" content="2">
+            <title>Incident Commander — Live Dashboard</title>
+            <style>
+                body {{ font-family: 'Inter', 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; padding: 20px; }}
+                h1 {{ color: #f8fafc; margin-bottom: 4px; }}
+                .meta {{ color: #94a3b8; margin-bottom: 20px; }}
+                table {{ width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 8px; overflow: hidden; }}
+                th {{ background: #334155; padding: 12px 16px; text-align: left; font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; }}
+                td {{ padding: 10px 16px; border-top: 1px solid #334155; }}
+                .health-bar {{ background: #1e293b; border-radius: 999px; height: 24px; width: 200px; overflow: hidden; margin-top: 8px; }}
+                .health-fill {{ height: 100%; border-radius: 999px; transition: width 0.5s; }}
+            </style>
+        </head>
+        <body>
+            <h1>🚨 Incident Commander</h1>
+            <div class="meta">
+                Task: <b>{state.task_name or 'N/A'}</b> &nbsp;|&nbsp;
+                Step: <b>{state.step_count}</b> &nbsp;|&nbsp;
+                Score: <b>{state.cumulative_reward:.3f}</b> &nbsp;|&nbsp;
+                Resolved: <b>{state.is_resolved}</b>
+            </div>
+            <div style="margin-bottom:12px;">
+                System Health: <b>{health:.1%}</b>
+                <div class="health-bar">
+                    <div class="health-fill" style="width:{health*100:.0f}%; background: {'#22c55e' if health > 0.8 else '#eab308' if health > 0.5 else '#ef4444'};"></div>
+                </div>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Service</th><th>Status</th><th>Health</th><th>Error Rate</th>
+                        <th>Latency</th><th>CPU</th><th>Instances</th><th>Version</th>
+                    </tr>
+                </thead>
+                <tbody>{rows}</tbody>
+            </table>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=html)
+
     # ---- Metadata (required by openenv validate) ----
     @app.get("/metadata")
     async def metadata():
@@ -229,7 +320,7 @@ def create_incident_app() -> FastAPI:
             "name": "incident_commander_env",
             "description": (
                 "AI SRE Incident Commander — diagnose and resolve production "
-                "microservices outages across 3 difficulty levels"
+                "microservices outages across 5 difficulty levels with chaos injection"
             ),
         }
 

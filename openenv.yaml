@@ -10,3 +10,6 @@ tasks:
   - single_service_failure
   - cascading_failure
   - hidden_root_cause
+  - chaos_cascade
+  - multi_root_cause
+  - random_incident

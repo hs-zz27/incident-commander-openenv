@@ -91,7 +91,7 @@ class TestLifecycle:
         assert "single_service_failure" in tasks
         assert "cascading_failure" in tasks
         assert "hidden_root_cause" in tasks
-        assert len(tasks) == 3
+        assert len(tasks) >= 3
 
 
 # ---------------------------------------------------------------------------
@@ -383,7 +383,7 @@ class TestHTTPAPI:
     def test_tasks(self, client):
         r = client.get("/tasks")
         assert r.status_code == 200
-        assert len(r.json()["tasks"]) == 3
+        assert len(r.json()["tasks"]) >= 3
 
     def test_reset_default(self, client):
         r = client.post("/reset", json={})
