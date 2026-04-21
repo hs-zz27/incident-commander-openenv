@@ -38,3 +38,4 @@ evals/
 *.md
 !README.md
 !architecture.md
+!how_to_train.md
