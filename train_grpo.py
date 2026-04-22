@@ -1,7 +1,7 @@
 """
 GRPO Training Script for Incident Commander Environment.
 
-Uses HuggingFace TRL to fine-tune a small language model via GRPO (Group Relative 
+Uses HuggingFace TRL to fine-tune a small language model via GRPO (Group Relative
 Policy Optimization) on our environment.
 
 This is a MANDATORY hackathon requirement.
@@ -9,11 +9,19 @@ This is a MANDATORY hackathon requirement.
 Target model: Qwen2.5-1.5B-Instruct (small, trains fast on free compute)
 Training: 200-500 steps with reward curve logging every 50 steps
 
-Usage (in Bangalore with compute credits):
+Usage (GPU required):
   python train_grpo.py --model Qwen/Qwen2.5-1.5B-Instruct --steps 300
 
+Usage (Colab T4, memory-safe):
+  python train_grpo.py --model Qwen/Qwen2.5-1.5B-Instruct --steps 50 \
+      --batch-size 1 --use-lora --use-4bit --gradient-checkpointing
+
+Usage (dry-run, no GPU):
+  python train_grpo.py --dry-run --steps 5
+
 Prerequisites:
-  pip install trl transformers torch accelerate peft bitsandbytes
+  pip install trl>=0.15.0 transformers>=4.46.0 torch accelerate>=1.0.0 \
+      peft>=0.14.0 bitsandbytes>=0.45.0 datasets>=3.0.0
 """
 
 from __future__ import annotations
@@ -277,6 +285,153 @@ class IncidentCommanderRewardFunction:
 
 
 # ---------------------------------------------------------------------------
+# TRL-compatible reward function (P0 fix: uses explicit metadata, no guessing)
+# ---------------------------------------------------------------------------
+
+def incident_reward_func(completions, task_name, seed, **kwargs):
+    """
+    TRL GRPOTrainer-compatible reward function.
+
+    Called by the trainer for each batch of completions. Receives extra
+    dataset columns (task_name, seed) via **kwargs — no string matching.
+
+    Args:
+        completions: List of model outputs. Each is a list of message dicts
+                     e.g. [{"role": "assistant", "content": "..."}].
+        task_name:   List of task name strings from the dataset.
+        seed:        List of seed ints from the dataset.
+        **kwargs:    Any other dataset columns (unused).
+
+    Returns:
+        List of float rewards, one per completion.
+    """
+    rewards = []
+    for completion, tn, s in zip(completions, task_name, seed):
+        # Extract text content from the completion message(s)
+        if isinstance(completion, list) and len(completion) > 0:
+            # TRL sends completions as list of message dicts
+            text = completion[0].get("content", "") if isinstance(completion[0], dict) else str(completion[0])
+        else:
+            text = str(completion)
+
+        score = compute_single_action_reward(
+            task_name=tn,
+            obs_dict={},
+            action_text=text,
+            action_history=[],
+            seed=int(s),
+        )
+        rewards.append(float(score))
+    return rewards
+
+
+# ---------------------------------------------------------------------------
+# Dataset builder (P0 fix: explicit task_name + seed metadata per sample)
+# ---------------------------------------------------------------------------
+
+def build_training_dataset(reward_fn: IncidentCommanderRewardFunction, num_seeds: int = 3):
+    """
+    Build a HuggingFace Dataset with prompt + explicit task metadata.
+
+    Each row contains:
+      - prompt:    Conversational format [{"role": "user", "content": "..."}]
+      - task_name: Explicit task identifier for reward routing
+      - seed:      Seed used to generate this scenario
+
+    Multiple seeds per task diversify the training distribution.
+    """
+    from datasets import Dataset
+
+    rows = []
+    for task_name in reward_fn.TASKS:
+        for s in range(num_seeds):
+            seed_val = s + 42
+            env = IncidentCommanderEnvironment()
+            obs = env.reset(task_name=task_name, seed=seed_val)
+            prompt_text = build_obs_prompt(obs.model_dump(), 1, [])
+            env.close()
+            rows.append({
+                "prompt": [{"role": "user", "content": prompt_text}],
+                "task_name": task_name,
+                "seed": seed_val,
+            })
+
+    return Dataset.from_list(rows)
+
+
+# ---------------------------------------------------------------------------
+# Memory-aware model loading (P1 fix: LoRA, 4-bit, gradient checkpointing)
+# ---------------------------------------------------------------------------
+
+def load_model_and_tokenizer(model_name, use_lora, use_4bit, gradient_checkpointing):
+    """
+    Load model and tokenizer with memory-aware configuration.
+
+    Returns:
+        (model, tokenizer, peft_config) — peft_config is None if LoRA is off.
+    """
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+    import torch
+
+    print(f"\nLoading model: {model_name}...")
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    model_kwargs: Dict[str, Any] = {"device_map": "auto"}
+
+    # Precision: bf16 if supported, else fp16
+    if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+        model_kwargs["torch_dtype"] = torch.bfloat16
+        print("  Precision: bfloat16")
+    else:
+        model_kwargs["torch_dtype"] = torch.float16
+        print("  Precision: float16")
+
+    # 4-bit quantization via bitsandbytes
+    if use_4bit:
+        try:
+            from transformers import BitsAndBytesConfig
+            model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=model_kwargs["torch_dtype"],
+                bnb_4bit_use_double_quant=True,
+            )
+            print("  Quantization: 4-bit NF4")
+        except ImportError:
+            print("  ⚠️ bitsandbytes not installed — skipping 4-bit quantization")
+
+    model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+
+    if gradient_checkpointing:
+        model.gradient_checkpointing_enable()
+        print("  Gradient checkpointing: enabled")
+
+    # LoRA adapter
+    peft_config = None
+    if use_lora:
+        try:
+            from peft import LoraConfig
+            peft_config = LoraConfig(
+                r=16,
+                lora_alpha=32,
+                lora_dropout=0.05,
+                target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
+                task_type="CAUSAL_LM",
+            )
+            print("  LoRA: r=16, alpha=32")
+        except ImportError:
+            print("  ⚠️ peft not installed — skipping LoRA")
+
+    param_count = sum(p.numel() for p in model.parameters())
+    print(f"  Parameters: {param_count:,}")
+
+    return model, tokenizer, peft_config
+
+
+# ---------------------------------------------------------------------------
 # Training Loop (GRPO)
 # ---------------------------------------------------------------------------
 
@@ -295,16 +450,37 @@ def build_training_prompts(reward_fn: IncidentCommanderRewardFunction) -> List[D
 def main():
     parser = argparse.ArgumentParser(description="GRPO Training for Incident Commander")
     parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-1.5B-Instruct",
-                        help="HuggingFace model name")
+                        help="HuggingFace model name or local checkpoint path")
     parser.add_argument("--steps", type=int, default=300, help="Training steps")
-    parser.add_argument("--batch-size", type=int, default=4, help="Batch size")
+    parser.add_argument("--batch-size", type=int, default=4, help="Per-device batch size")
     parser.add_argument("--lr", type=float, default=5e-6, help="Learning rate")
     parser.add_argument("--output-dir", type=str, default="trained_model",
-                        help="Output directory for trained model")
+                        help="Output directory for trained model/adapter")
     parser.add_argument("--log-every", type=int, default=50,
                         help="Log metrics every N steps")
     parser.add_argument("--dry-run", action="store_true",
                         help="Test without GPU (uses mock training)")
+
+    # Memory-aware options (P1)
+    parser.add_argument("--use-lora", action="store_true",
+                        help="Use LoRA adapters for memory-efficient training")
+    parser.add_argument("--use-4bit", action="store_true",
+                        help="Load model in 4-bit quantization (requires bitsandbytes)")
+    parser.add_argument("--gradient-checkpointing", action="store_true",
+                        help="Enable gradient checkpointing to reduce VRAM usage")
+
+    # GRPO-specific options
+    parser.add_argument("--num-generations", type=int, default=4,
+                        help="Number of completions per prompt (GRPO group size)")
+    parser.add_argument("--num-seeds", type=int, default=3,
+                        help="Number of seeds per task for dataset diversity")
+
+    # Checkpointing options (P1)
+    parser.add_argument("--save-steps", type=int, default=50,
+                        help="Save checkpoint every N steps")
+    parser.add_argument("--resume-from-checkpoint", type=str, default=None,
+                        help="Path to checkpoint directory to resume training from")
+
     args = parser.parse_args()
 
     results_dir = Path(__file__).parent / "results"
@@ -316,6 +492,16 @@ def main():
     print(f"  Steps: {args.steps}")
     print(f"  Batch size: {args.batch_size}")
     print(f"  Learning rate: {args.lr}")
+    if args.use_lora:
+        print(f"  LoRA: enabled")
+    if args.use_4bit:
+        print(f"  4-bit quantization: enabled")
+    if args.gradient_checkpointing:
+        print(f"  Gradient checkpointing: enabled")
+    print(f"  Generations per prompt: {args.num_generations}")
+    print(f"  Save every: {args.save_steps} steps")
+    if args.resume_from_checkpoint:
+        print(f"  Resuming from: {args.resume_from_checkpoint}")
     print(f"{'='*60}")
 
     if args.dry_run:
@@ -369,52 +555,40 @@ def main():
         print("✅ Run on GPU with actual model for GRPO training.")
         return
 
-    # --- Actual GRPO Training ---
+    # -----------------------------------------------------------------------
+    # Full GRPO Training (GPU required)
+    # -----------------------------------------------------------------------
     try:
         from trl import GRPOTrainer, GRPOConfig
         from transformers import AutoTokenizer, AutoModelForCausalLM
+        from datasets import Dataset
         import torch
-    except ImportError:
-        print("ERROR: TRL/transformers not installed. Required for training.", file=sys.stderr)
-        print("Install with: pip install trl transformers torch accelerate peft", file=sys.stderr)
+    except ImportError as e:
+        print(f"ERROR: Missing training dependency: {e}", file=sys.stderr)
+        print(
+            "Install with: pip install trl>=0.15.0 transformers>=4.46.0 "
+            "torch accelerate>=1.0.0 peft>=0.14.0 bitsandbytes>=0.45.0 datasets>=3.0.0",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    print(f"\nLoading model: {args.model}...")
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
+    # --- Step 1: Load model + tokenizer (memory-aware) ---
+    model, tokenizer, peft_config = load_model_and_tokenizer(
+        model_name=args.model,
+        use_lora=args.use_lora,
+        use_4bit=args.use_4bit,
+        gradient_checkpointing=args.gradient_checkpointing,
     )
 
-    # Set up reward function
+    # --- Step 2: Build training dataset with explicit metadata ---
     reward_fn = IncidentCommanderRewardFunction()
+    print(f"\nBuilding training dataset ({len(reward_fn.TASKS)} tasks × {args.num_seeds} seeds)...")
+    dataset = build_training_dataset(reward_fn, num_seeds=args.num_seeds)
+    print(f"  Dataset size: {len(dataset)} samples")
+    print(f"  Columns: {dataset.column_names}")
 
-    def compute_rewards(prompts: List[str], completions: List[str], **kwargs) -> List[float]:
-        """
-        GRPO reward function: score each completion via independent rollout.
-        Returns episode-level scores (0.0-1.0).
-        """
-        rewards = []
-        for prompt, completion in zip(prompts, completions):
-            # Determine task from prompt content
-            task = "single_service_failure"  # default
-            for t in reward_fn.TASKS:
-                if t in prompt:
-                    task = t
-                    break
-
-            score = compute_single_action_reward(
-                task_name=task,
-                obs_dict={},
-                action_text=completion,
-                action_history=[],
-                seed=42,
-            )
-            rewards.append(score)
-        return rewards
-
-    # GRPO config
+    # --- Step 3: Configure GRPO ---
+    use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
     config = GRPOConfig(
         output_dir=args.output_dir,
         num_train_epochs=1,
@@ -422,24 +596,78 @@ def main():
         per_device_train_batch_size=args.batch_size,
         learning_rate=args.lr,
         logging_steps=args.log_every,
-        save_steps=args.steps,  # Save at end
+        save_steps=args.save_steps,
         gradient_accumulation_steps=2,
-        bf16=True,
+        bf16=use_bf16,
+        fp16=not use_bf16,
+        num_generations=args.num_generations,
+        max_completion_length=256,
+        log_level="info",
+        report_to="none",
     )
 
-    # Build training prompts
-    prompt_data = build_training_prompts(reward_fn)
+    # --- Step 4: Instantiate GRPOTrainer ---
+    print(f"\nInitializing GRPOTrainer...")
+    trainer_kwargs: Dict[str, Any] = {
+        "model": model,
+        "reward_funcs": [incident_reward_func],
+        "args": config,
+        "train_dataset": dataset,
+        "processing_class": tokenizer,
+    }
+    if peft_config is not None:
+        trainer_kwargs["peft_config"] = peft_config
 
-    print(f"\nStarting GRPO training for {args.steps} steps...")
-    print(f"Training prompts: {len(prompt_data)} tasks")
-    
-    # Note: The actual TRL GRPO integration will be adapted in Bangalore
-    # based on the exact TRL version available on the compute cluster.
-    # The reward function is ready — each completion gets an independent
-    # episode-level score via rollout_episode().
+    trainer = GRPOTrainer(**trainer_kwargs)
 
-    print("⚠️ Full GRPO training requires GPU compute. Use --dry-run for testing.")
-    print(f"Training will be completed in Bangalore with compute credits.")
+    # --- Step 5: Train ---
+    print(f"\n{'='*60}")
+    print(f"  Starting GRPO training for {args.steps} steps...")
+    print(f"  Training on {len(dataset)} prompts with {args.num_generations} generations each")
+    print(f"{'='*60}\n")
+
+    train_result = trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
+
+    # --- Step 6: Save final model/adapter + tokenizer ---
+    print(f"\nSaving model to {args.output_dir}...")
+    trainer.save_model(args.output_dir)
+    tokenizer.save_pretrained(args.output_dir)
+
+    # --- Step 7: Write training metrics log ---
+    metrics_log = {
+        "train_result": {
+            "global_step": train_result.global_step,
+            "training_loss": train_result.training_loss,
+            "metrics": train_result.metrics,
+        },
+        "log_history": trainer.state.log_history,
+        "config": {
+            "model": args.model,
+            "steps": args.steps,
+            "batch_size": args.batch_size,
+            "lr": args.lr,
+            "use_lora": args.use_lora,
+            "use_4bit": args.use_4bit,
+            "gradient_checkpointing": args.gradient_checkpointing,
+            "num_generations": args.num_generations,
+            "num_seeds": args.num_seeds,
+        },
+    }
+    log_path = results_dir / "training_log.json"
+    with open(log_path, "w") as f:
+        json.dump(metrics_log, f, indent=2, default=str)
+
+    print(f"\n{'='*60}")
+    print(f"  ✅ Training complete!")
+    print(f"  📁 Model saved to: {args.output_dir}/")
+    print(f"  📊 Training log saved to: {log_path}")
+    print(f"  📈 Final loss: {train_result.training_loss:.4f}")
+    print(f"  🔢 Total steps: {train_result.global_step}")
+    if args.use_lora:
+        print(f"  💡 To load: use PeftModel.from_pretrained(base_model, '{args.output_dir}')")
+    else:
+        print(f"  💡 To load: use AutoModelForCausalLM.from_pretrained('{args.output_dir}')")
+    print(f"{'='*60}")
 
 
 if __name__ == "__main__":

@@ -30,6 +30,15 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "httpx>=0.25.0",
 ]
+train = [
+    "trl>=0.15.0",
+    "transformers>=4.46.0",
+    "accelerate>=1.0.0",
+    "peft>=0.14.0",
+    "bitsandbytes>=0.45.0",
+    "datasets>=3.0.0",
+    "torch>=2.0.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["server*"]

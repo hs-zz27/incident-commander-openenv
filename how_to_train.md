@@ -351,7 +351,7 @@ python train_grpo.py \
   --steps 300
 ```
 
-### Full Training Command with All Options
+### Full Training Command with All Options (Memory-Aware)
 
 ```bash
 python train_grpo.py \
@@ -360,7 +360,12 @@ python train_grpo.py \
   --batch-size 4 \
   --lr 5e-6 \
   --output-dir trained_model \
-  --log-every 50
+  --log-every 50 \
+  --use-lora \
+  --use-4bit \
+  --gradient-checkpointing \
+  --save-steps 100 \
+  --num-seeds 3
 ```
 
 ### CLI Arguments Reference
@@ -374,13 +379,20 @@ python train_grpo.py \
 | `--output-dir` | `trained_model` | Directory to save the fine-tuned model |
 | `--log-every` | `50` | Print training metrics every N steps |
 | `--dry-run` | `false` | Test wrapper without GPU |
+| `--use-lora` | `false` | Use LoRA adapters for memory-efficient training |
+| `--use-4bit` | `false` | Load model in 4-bit quantization (requires bitsandbytes) |
+| `--gradient-checkpointing`| `false` | Enable gradient checkpointing to reduce VRAM usage |
+| `--save-steps` | `50` | Save checkpoint every N steps |
+| `--resume-from-checkpoint`| `None` | Path to checkpoint directory to resume training from |
+| `--num-generations`| `4` | Number of completions per prompt (GRPO group size) |
+| `--num-seeds` | `3` | Number of seeds per task for dataset diversity |
 
 ### What Happens During Training
 
-```
+```text
 Step 1/300:
-  1. Prompt created from environment obs   → "You are an SRE... Services: cache: down..."
-  2. Model generates N responses           → '{"action_type": "inspect_logs", "service_name": "cache"}'
+  1. Dataset generates N completions per prompt
+  2. Model generates completions           → '{"action_type": "inspect_logs", "service_name": "cache"}'
   3. Each response parsed & env stepped     → reward = +0.05
   4. Rewards ranked within the group        → relative ranking computed
   5. Model weights updated via GRPO         → gradient step applied
@@ -406,9 +418,10 @@ GRPOConfig(
     per_device_train_batch_size=4,       # Batch size per GPU
     learning_rate=5e-6,                  # Conservative LR for fine-tuning
     logging_steps=50,                    # Log every 50 steps
-    save_steps=300,                      # Save at end of training
+    save_steps=50,                       # Save checkpoints
     gradient_accumulation_steps=2,       # Effective batch = 4 × 2 = 8
     bf16=True,                           # BFloat16 mixed precision
+    num_generations=4,                   # GRPO group size
 )
 ```
 
@@ -416,11 +429,11 @@ GRPOConfig(
 
 | Path | Content |
 |------|---------|
-| `trained_model/` | HuggingFace-compatible model checkpoint |
+| `trained_model/` | HuggingFace-compatible model checkpoint or LoRA adapter |
 | `trained_model/config.json` | Model configuration |
 | `trained_model/tokenizer.json` | Tokenizer files |
-| `trained_model/model.safetensors` | Model weights |
-| `results/training_log.json` | Step-by-step reward data |
+| `trained_model/model.safetensors` | Model weights or adapter weights |
+| `results/training_log.json` | Step-by-step reward data and metrics |
 
 ---
 
@@ -432,8 +445,7 @@ GRPOConfig(
 # Cell 1: Clone and install
 !git clone https://github.com/hs-zz27/incident-commander-openenv.git
 %cd incident-commander-openenv
-!pip install -e ".[dev]"
-!pip install trl transformers torch accelerate peft bitsandbytes
+!pip install -e ".[train]"
 
 # Cell 2: Verify GPU
 import torch
@@ -441,20 +453,25 @@ print(f"GPU: {torch.cuda.get_device_name(0)}")
 print(f"VRAM: {torch.cuda.get_device_properties(0).total_mem / 1e9:.1f} GB")
 
 # Cell 3: Dry run
-!python train_grpo.py --dry-run
+!python train_grpo.py --dry-run --steps 5
 
-# Cell 4: Full training (use T4/A100 runtime)
+# Cell 4: Full training (memory-safe on T4)
 !python train_grpo.py \
   --model Qwen/Qwen2.5-1.5B-Instruct \
-  --steps 200 \
-  --batch-size 2 \
+  --steps 50 \
+  --batch-size 1 \
+  --use-lora \
+  --use-4bit \
+  --gradient-checkpointing \
   --output-dir trained_model
 
-# Cell 5: Download the trained model
+# Cell 5: Download the trained adapter
 from google.colab import files
 !zip -r trained_model.zip trained_model/
 files.download("trained_model.zip")
 ```
+
+> **Note:** Because we used `--use-lora` and `--use-4bit`, the saved `trained_model` is a LoRA adapter, not the full model. See the Inference section on how to load it.
 
 ### Option B: Lambda Labs / RunPod / Vast.ai
 
@@ -467,13 +484,12 @@ ssh user@gpu-instance-ip
 git clone https://github.com/hs-zz27/incident-commander-openenv.git
 cd incident-commander-openenv
 
-pip install -e ".[dev]"
-pip install trl transformers torch accelerate peft bitsandbytes
+pip install -e ".[train]"
 
 # 4. Dry run
-python train_grpo.py --dry-run
+python train_grpo.py --dry-run --steps 5
 
-# 5. Full training
+# 5. Full training (A100 can handle full fine-tuning without LoRA)
 python train_grpo.py \
   --model Qwen/Qwen2.5-1.5B-Instruct \
   --steps 500 \
@@ -715,15 +731,19 @@ python inference.py
 
 ### Option C: Direct Python Loading
 
+If you trained with `--use-lora`, you need to load the base model first, then apply the adapter:
+
 ```python
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from peft import PeftModel
 import torch
 
-model = AutoModelForCausalLM.from_pretrained(
-    "./trained_model",
+base_model = AutoModelForCausalLM.from_pretrained(
+    "Qwen/Qwen2.5-1.5B-Instruct",
     torch_dtype=torch.bfloat16,
     device_map="auto"
 )
+model = PeftModel.from_pretrained(base_model, "./trained_model")
 tokenizer = AutoTokenizer.from_pretrained("./trained_model")
 
 prompt = "You are an SRE Incident Commander..."
@@ -733,6 +753,8 @@ response = tokenizer.decode(outputs[0], skip_special_tokens=True)
 print(response)
 ```
 
+If you trained without LoRA (full fine-tune), you can just use `AutoModelForCausalLM.from_pretrained("./trained_model")`.
+
 ---
 
 ## 15. Troubleshooting
@@ -741,13 +763,15 @@ print(response)
 
 | Issue | Cause | Fix |
 |-------|-------|-----|
-| `CUDA out of memory` | Batch size too large | Reduce `--batch-size` to 2 or 1 |
-| `ImportError: No module named 'trl'` | Training deps not installed | `pip install trl transformers torch accelerate peft bitsandbytes` |
+| `CUDA out of memory` | Batch size too large | Reduce `--batch-size`, add `--use-lora`, `--use-4bit`, and `--gradient-checkpointing` |
+| `ImportError: No module named 'trl'` | Training deps not installed | `pip install -e ".[train]"` |
 | `Model outputs gibberish` | Too few training steps | Increase `--steps` to 500+ |
 | `Reward stuck at -0.1` | Model can't produce valid JSON | Check prompt format; try lower LR |
 | `FileNotFoundError: results/` | First run | The script creates this automatically |
 | `torch.cuda.is_available() = False` | No GPU or CUDA not installed | Install CUDA toolkit or use `--dry-run` |
 | `ConnectionError` during model download | Network issue | Set `HF_HUB_OFFLINE=1` if model is cached |
+| `ValueError: Unrecognized configuration class` | Loading LoRA without PeftModel | Use `PeftModel.from_pretrained` (see Section 14 Option C) |
+| `bitsandbytes is required` | Missing 4-bit dependency | `pip install bitsandbytes` (or use `.[train]`) |
 
 ### Memory Optimization Tips
 
@@ -800,9 +824,9 @@ print(f'Parameters: {sum(p.numel() for p in model.parameters()):,}')
 **A:** Check the reward curve in `results/training_log.json`. Rewards should trend upward. Then run `python inference.py` with the trained model and compare scores against the baseline scores in this document.
 
 ### Q: Can I resume training from a checkpoint?
-**A:** Yes. Point `--model` at the saved checkpoint directory:
+**A:** Yes. Point `--resume-from-checkpoint` at the saved checkpoint directory (e.g. `trained_model/checkpoint-100`):
 ```bash
-python train_grpo.py --model ./trained_model --steps 200
+python train_grpo.py --model Qwen/Qwen2.5-1.5B-Instruct --steps 300 --resume-from-checkpoint ./trained_model/checkpoint-100
 ```
 
 ### Q: What's the minimum training to see improvement?
@@ -815,7 +839,7 @@ python train_grpo.py --model ./trained_model --steps 200
 ```bash
 # 1. Install everything
 pip install -e ".[dev]"
-pip install trl transformers torch accelerate peft bitsandbytes
+pip install -e ".[train]"
 
 # 2. Validate environment works
 python -m pytest tests/ -q
