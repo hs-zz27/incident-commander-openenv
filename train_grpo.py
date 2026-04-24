@@ -29,7 +29,9 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import locale
 import os
+import platform
 import sys
 import time
 from pathlib import Path
@@ -447,6 +449,74 @@ def build_training_prompts(reward_fn: IncidentCommanderRewardFunction) -> List[D
     return prompts
 
 
+# ---------------------------------------------------------------------------
+# Runtime preflight / platform guards
+# ---------------------------------------------------------------------------
+
+def _force_utf8_locale_for_trl_on_windows() -> None:
+    """
+    Work around TRL import issues on Windows CP1252 locales.
+
+    Some TRL files are read with default locale encoding at import time.
+    On certain Windows setups this causes UnicodeDecodeError unless UTF-8
+    mode is enabled before process start. This patch forces UTF-8 encoding
+    lookup in-process as a fallback.
+    """
+    if platform.system().lower() != "windows":
+        return
+
+    preferred = locale.getpreferredencoding(False)
+    if preferred.lower() == "utf-8":
+        return
+
+    # Best-effort in-process fallback for libraries that call locale APIs.
+    locale.getpreferredencoding = lambda do_setlocale=True: "utf-8"  # type: ignore[assignment]
+    if hasattr(locale, "getencoding"):
+        locale.getencoding = lambda: "utf-8"  # type: ignore[assignment]
+
+    print(
+        "⚠️ Windows non-UTF8 locale detected; applying UTF-8 compatibility mode for TRL import.",
+        file=sys.stderr,
+    )
+    print(
+        "   Recommended in PowerShell: $env:PYTHONUTF8='1'",
+        file=sys.stderr,
+    )
+
+
+def _preflight_training_environment(allow_cpu: bool) -> None:
+    """Validate Python/GPU prerequisites before expensive model loading."""
+    py = sys.version_info
+    if py.major == 3 and py.minor >= 13:
+        print(
+            "⚠️ Python 3.13 detected. Training ecosystem support is less mature on 3.13.",
+            file=sys.stderr,
+        )
+        print(
+            "   Recommended for stable GPU training: Python 3.10 or 3.11.",
+            file=sys.stderr,
+        )
+
+    try:
+        import torch
+    except Exception as e:
+        raise RuntimeError(
+            f"PyTorch import failed: {e}. Install torch before non-dry training."
+        ) from e
+
+    cuda_ok = torch.cuda.is_available()
+    if not cuda_ok and not allow_cpu:
+        raise RuntimeError(
+            "CUDA GPU not detected. Non-dry GRPO training is expected to run on GPU. "
+            "Use --allow-cpu only for debug, or run on Colab/RunPod/Lambda."
+        )
+
+    if cuda_ok:
+        print(f"GPU detected: {torch.cuda.get_device_name(0)}")
+    else:
+        print("⚠️ Running without CUDA GPU (--allow-cpu). This is only suitable for debug.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="GRPO Training for Incident Commander")
     parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-1.5B-Instruct",
@@ -480,6 +550,8 @@ def main():
                         help="Save checkpoint every N steps")
     parser.add_argument("--resume-from-checkpoint", type=str, default=None,
                         help="Path to checkpoint directory to resume training from")
+    parser.add_argument("--allow-cpu", action="store_true",
+                        help="Allow non-dry training on CPU for debugging (very slow)")
 
     args = parser.parse_args()
 
@@ -558,6 +630,8 @@ def main():
     # -----------------------------------------------------------------------
     # Full GRPO Training (GPU required)
     # -----------------------------------------------------------------------
+    _force_utf8_locale_for_trl_on_windows()
+
     try:
         from trl import GRPOTrainer, GRPOConfig
         from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -570,6 +644,12 @@ def main():
             "torch accelerate>=1.0.0 peft>=0.14.0 bitsandbytes>=0.45.0 datasets>=3.0.0",
             file=sys.stderr,
         )
+        sys.exit(1)
+
+    try:
+        _preflight_training_environment(allow_cpu=args.allow_cpu)
+    except RuntimeError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
 
     # --- Step 1: Load model + tokenizer (memory-aware) ---

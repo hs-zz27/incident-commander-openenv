@@ -34,29 +34,5 @@
       0.02,
       0.12
     ]
-  },
-  {
-    "step": 4,
-    "task": "single_service_failure",
-    "mean_score": 0.275,
-    "best_score": 0.75,
-    "scores": [
-      0.13,
-      0.75,
-      0.09,
-      0.13
-    ]
-  },
-  {
-    "step": 5,
-    "task": "cascading_failure",
-    "mean_score": 0.0483,
-    "best_score": 0.1133,
-    "scores": [
-      0.1133,
-      0.0133,
-      0.0133,
-      0.0533
-    ]
   }
 ]
