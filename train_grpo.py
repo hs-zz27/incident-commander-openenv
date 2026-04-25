@@ -715,7 +715,10 @@ def _pick_heuristic_action(
 # Memory-aware model loading (P1 fix: LoRA, 4-bit, gradient checkpointing)
 # ---------------------------------------------------------------------------
 
-def load_model_and_tokenizer(model_name, use_lora, use_4bit, gradient_checkpointing):
+def load_model_and_tokenizer(
+    model_name, use_lora, use_4bit, gradient_checkpointing,
+    lora_r=16, lora_alpha=32,
+):
     """
     Load model and tokenizer with memory-aware configuration.
 
@@ -768,14 +771,19 @@ def load_model_and_tokenizer(model_name, use_lora, use_4bit, gradient_checkpoint
     if use_lora:
         try:
             from peft import LoraConfig
+            # For larger models, target MLP layers too for deeper adaptation
+            target_modules = ["q_proj", "v_proj", "k_proj", "o_proj"]
+            if lora_r >= 32:
+                target_modules += ["gate_proj", "up_proj", "down_proj"]
+
             peft_config = LoraConfig(
-                r=16,
-                lora_alpha=32,
+                r=lora_r,
+                lora_alpha=lora_alpha,
                 lora_dropout=0.05,
-                target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
+                target_modules=target_modules,
                 task_type="CAUSAL_LM",
             )
-            print("  LoRA: r=16, alpha=32")
+            print(f"  LoRA: r={lora_r}, alpha={lora_alpha}, targets={target_modules}")
         except ImportError:
             print("  ⚠️ peft not installed — skipping LoRA")
 
@@ -921,6 +929,12 @@ def main():
     parser.add_argument("--allow-cpu", action="store_true",
                         help="Allow non-dry training on CPU for debugging (very slow)")
 
+    # LoRA hyperparameters
+    parser.add_argument("--lora-r", type=int, default=16,
+                        help="LoRA rank (16 for 0.5B, 32-64 for 1.5B+)")
+    parser.add_argument("--lora-alpha", type=int, default=32,
+                        help="LoRA alpha (usually 2x rank)")
+
     args = parser.parse_args()
 
     results_dir = Path(__file__).parent / "results"
@@ -1048,6 +1062,8 @@ def main():
         use_lora=args.use_lora,
         use_4bit=args.use_4bit,
         gradient_checkpointing=args.gradient_checkpointing,
+        lora_r=args.lora_r,
+        lora_alpha=args.lora_alpha,
     )
 
     # --- Step 2: Build training dataset with explicit metadata ---
