@@ -139,7 +139,11 @@ def heuristic_action(obs_dict: Dict, action_history: List[str]) -> IncidentActio
 # ---------------------------------------------------------------------------
 
 def load_model(base_name: str, adapter_path: str, device: str):
-    """Load base model + LoRA adapter. Returns (model, tokenizer)."""
+    """Load base model + optional LoRA adapter. Returns (model, tokenizer).
+    
+    If adapter_path is 'none', loads just the base model (useful for
+    evaluating SFT-merged models without a GRPO adapter).
+    """
     try:
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -148,17 +152,20 @@ def load_model(base_name: str, adapter_path: str, device: str):
         print(f"ERROR: {e}\nInstall: pip install transformers peft torch accelerate", file=sys.stderr)
         sys.exit(1)
 
-    adapter_dir = Path(adapter_path)
-    if not adapter_dir.exists():
-        print(f"\n❌ Adapter not found at '{adapter_path}'", file=sys.stderr)
-        print(f"   Get it from your teammate and place in: {Path(__file__).parent / adapter_path}", file=sys.stderr)
-        print(f"   Or run with --no-model for baselines-only.\n", file=sys.stderr)
-        sys.exit(1)
+    skip_adapter = adapter_path.lower() == "none"
 
-    for f in ["adapter_config.json", "adapter_model.safetensors"]:
-        if not (adapter_dir / f).exists():
-            print(f"❌ Missing {f} in {adapter_path}/", file=sys.stderr)
+    if not skip_adapter:
+        adapter_dir = Path(adapter_path)
+        if not adapter_dir.exists():
+            print(f"\n❌ Adapter not found at '{adapter_path}'", file=sys.stderr)
+            print(f"   Get it from your teammate and place in: {Path(__file__).parent / adapter_path}", file=sys.stderr)
+            print(f"   Or run with --no-model for baselines-only.\n", file=sys.stderr)
             sys.exit(1)
+
+        for f in ["adapter_config.json", "adapter_model.safetensors"]:
+            if not (adapter_dir / f).exists():
+                print(f"❌ Missing {f} in {adapter_path}/", file=sys.stderr)
+                sys.exit(1)
 
     # Precision
     dtype = torch.float32
@@ -167,7 +174,8 @@ def load_model(base_name: str, adapter_path: str, device: str):
     elif device == "cuda":
         dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 
-    print(f"\n  Loading {base_name} + {adapter_path} on {device} ({dtype})...")
+    label = f"{base_name}" if skip_adapter else f"{base_name} + {adapter_path}"
+    print(f"\n  Loading {label} on {device} ({dtype})...")
     tokenizer = AutoTokenizer.from_pretrained(base_name)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -179,10 +187,13 @@ def load_model(base_name: str, adapter_path: str, device: str):
     if device == "mps":
         model = model.to("mps")
 
-    model = PeftModel.from_pretrained(model, adapter_path)
+    if not skip_adapter:
+        model = PeftModel.from_pretrained(model, adapter_path)
     model.eval()
     params = sum(p.numel() for p in model.parameters())
     print(f"  ✅ Loaded: {params:,} params on {next(model.parameters()).device}")
+    if skip_adapter:
+        print(f"  ℹ️  No adapter loaded — evaluating base/merged model directly")
     return model, tokenizer
 
 
