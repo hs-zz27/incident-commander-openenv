@@ -63,46 +63,48 @@ ALL_TASKS = list(EXPERT_STRATEGIES.keys())
 # the incident. This teaches the model that there are multiple valid approaches.
 HEURISTIC_STRATEGIES: Dict[str, List[IncidentAction]] = {
     "single_service_failure": [
-        IncidentAction(action_type=ActionType.INSPECT_METRICS, service_name="cache"),
         IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="cache"),
+        IncidentAction(action_type=ActionType.INSPECT_METRICS, service_name="cache"),
         IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="cache"),
     ],
     "cascading_failure": [
-        IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="checkout"),
+        # Root cause (database) FIRST — matches orchestrator diagnostics guard
         IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="database"),
-        IncidentAction(action_type=ActionType.INSPECT_METRICS, service_name="database"),
+        IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="checkout"),
         IncidentAction(action_type=ActionType.SCALE_SERVICE, service_name="database"),
         IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="database"),
         IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="auth"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="payments"),
         IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="checkout"),
     ],
     "hidden_root_cause": [
+        # Root cause (auth — version mismatch) FIRST
         IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="auth"),
-        IncidentAction(action_type=ActionType.INSPECT_METRICS, service_name="auth"),
         IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="checkout"),
         IncidentAction(action_type=ActionType.ROLLBACK, service_name="auth"),
         IncidentAction(action_type=ActionType.CLEAR_CACHE),
-        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="checkout"),
         IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="payments"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="checkout"),
     ],
     "chaos_cascade": [
-        IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="checkout"),
+        # Root cause (database) FIRST
         IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="database"),
+        IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="checkout"),
         IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="database"),
-        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="cache"),
         IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="auth"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="payments"),
         IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="checkout"),
-        IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="notification"),
         IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="notification"),
     ],
     "multi_root_cause": [
-        IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="database"),
+        # Root cause (auth — version mismatch) FIRST, then database
         IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="auth"),
-        IncidentAction(action_type=ActionType.INSPECT_METRICS, service_name="database"),
+        IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="database"),
         IncidentAction(action_type=ActionType.ROLLBACK, service_name="auth"),
         IncidentAction(action_type=ActionType.SCALE_SERVICE, service_name="database"),
-        IncidentAction(action_type=ActionType.CLEAR_CACHE),
         IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="database"),
+        IncidentAction(action_type=ActionType.CLEAR_CACHE),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="payments"),
         IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="checkout"),
     ],
 }
@@ -180,7 +182,7 @@ def generate_trajectory_pairs(
     return pairs
 
 
-def build_sft_dataset(num_seeds: int = 5) -> List[Dict[str, Any]]:
+def build_sft_dataset(num_seeds: int = 8) -> List[Dict[str, Any]]:
     """
     Build the full SFT dataset from expert + heuristic trajectories.
 

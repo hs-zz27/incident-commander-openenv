@@ -188,12 +188,14 @@ def compute_single_action_reward(
     
     Replays the action history up to this point, then executes the new action,
     then uses a HEURISTIC FOLLOW-UP to complete the episode (not do_nothing).
-    Returns the final episode grade (0.0-1.0).
+    Returns the final episode grade (0.0-1.0) PLUS shaping bonuses:
+      - Orchestrator alignment: +0.15 if action matches what the orchestrator would pick
+      - Repeat penalty: -0.15 if action repeats the last action in history
+      - Parse failure: -0.1 if action can't be parsed as valid JSON
     
     The heuristic tail gives much better reward signal than do_nothing:
       - A good action (correct inspect/restart) + heuristic tail → high score
       - A bad action (wrong service, escalate) + heuristic tail → low score
-      - A parse failure → immediate -0.1 penalty
     
     This ensures GRPO gets episode-level rewards that are comparable
     across different completions from the same prompt.
@@ -225,6 +227,7 @@ def compute_single_action_reward(
             data = json.loads(text)
             action = IncidentAction(**data)
         except Exception:
+            env.close()
             return -0.1  # Parse failure penalty
 
         obs = env.step(action)
@@ -235,6 +238,8 @@ def compute_single_action_reward(
         tail_history = list(action_history) + [a_str]
     else:
         tail_history = list(action_history)
+        a_str = "do_nothing"
+        action = IncidentAction(action_type=ActionType.DO_NOTHING)
 
     # Complete episode with HEURISTIC follow-up (not do_nothing).
     # This gives a shaped reward: good first actions lead to better heuristic
@@ -242,8 +247,57 @@ def compute_single_action_reward(
     _heuristic_complete_episode(env, obs, tail_history)
 
     grade = env.grade()
+    episode_score = grade["score"]
     env.close()
-    return grade["score"]
+
+    # --- Shaping bonus: orchestrator alignment ---
+    # Compare the model's action to what the orchestrator's heuristic would choose.
+    # This teaches the model to output orchestrator-aligned actions directly.
+    alignment_bonus = 0.0
+    try:
+        from orchestrator import choose_heuristic_action, _infer_root_cause
+        from server.tasks import get_task
+        task = get_task(task_name)
+
+        # Rebuild obs from a fresh replay to get the state before our action
+        env2 = IncidentCommanderEnvironment()
+        obs2 = env2.reset(task_name=task_name, seed=seed)
+        for past_action_str in action_history:
+            if obs2.done:
+                break
+            parts2 = past_action_str.split(":", 1)
+            at2 = parts2[0]
+            sn2 = parts2[1] if len(parts2) > 1 else None
+            try:
+                a2 = IncidentAction(action_type=at2, service_name=sn2)
+            except Exception:
+                a2 = IncidentAction(action_type=ActionType.DO_NOTHING)
+            obs2 = env2.step(a2)
+        obs2_dict = obs2.model_dump()
+        env2.close()
+
+        optimal = choose_heuristic_action(
+            obs2_dict, len(action_history) + 1, action_history, task,
+        )
+        optimal_str = optimal.action_type.value
+        if optimal.service_name:
+            optimal_str += f":{optimal.service_name}"
+
+        if a_str == optimal_str:
+            alignment_bonus = 0.15   # Exact match
+        elif action.action_type.value == optimal.action_type.value:
+            alignment_bonus = 0.05   # Right type, wrong service
+        else:
+            alignment_bonus = -0.05  # Wrong action type
+    except Exception:
+        pass  # Don't crash reward if orchestrator import fails
+
+    # --- Shaping bonus: repeat penalty ---
+    repeat_penalty = 0.0
+    if action_history and a_str == action_history[-1]:
+        repeat_penalty = -0.15
+
+    return episode_score + alignment_bonus + repeat_penalty
 
 
 def _heuristic_complete_episode(
@@ -447,7 +501,7 @@ def incident_reward_func(completions, task_name, seed, action_history=None, **kw
 # Dataset builder (P0 fix: explicit task_name + seed metadata per sample)
 # ---------------------------------------------------------------------------
 
-def build_training_dataset(reward_fn: IncidentCommanderRewardFunction, num_seeds: int = 3):
+def build_training_dataset(reward_fn: IncidentCommanderRewardFunction, num_seeds: int = 5):
     """
     Build a HuggingFace Dataset with prompt + explicit task metadata.
 

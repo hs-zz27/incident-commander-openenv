@@ -37,8 +37,9 @@ EXPERT_STRATEGIES: Dict[str, List[IncidentAction]] = {
         IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="cache"),
     ],
     "cascading_failure": [
+        # Root cause (database) inspected FIRST
         IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="database"),
-        IncidentAction(action_type=ActionType.INSPECT_METRICS, service_name="checkout"),
+        IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="checkout"),
         IncidentAction(action_type=ActionType.SCALE_SERVICE, service_name="database"),
         IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="database"),
         IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="auth"),
@@ -46,28 +47,26 @@ EXPERT_STRATEGIES: Dict[str, List[IncidentAction]] = {
         IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="checkout"),
     ],
     "hidden_root_cause": [
-        IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="checkout"),
-        IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="payments"),
+        # Root cause (auth — version mismatch) inspected FIRST
         IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="auth"),
+        IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="checkout"),
         IncidentAction(action_type=ActionType.ROLLBACK, service_name="auth"),
         IncidentAction(action_type=ActionType.CLEAR_CACHE),
         IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="payments"),
         IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="checkout"),
     ],
     "chaos_cascade": [
+        # Root cause (database) inspected FIRST
         IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="database"),
         IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="checkout"),
         IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="database"),
         IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="auth"),
         IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="payments"),
         IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="checkout"),
-        # After step 8 chaos injection, notification goes down
-        IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="notification"),
         IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="notification"),
-        # May need extra restarts for dependents of notification
-        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="payments"),
     ],
     "multi_root_cause": [
+        # Root cause (auth — version mismatch) inspected FIRST, then database
         IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="auth"),
         IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="database"),
         IncidentAction(action_type=ActionType.ROLLBACK, service_name="auth"),
