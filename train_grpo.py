@@ -189,8 +189,8 @@ def compute_single_action_reward(
     Replays the action history up to this point, then executes the new action,
     then uses a HEURISTIC FOLLOW-UP to complete the episode (not do_nothing).
     Returns the final episode grade (0.0-1.0) PLUS shaping bonuses:
-      - Orchestrator alignment: +0.15 if action matches what the orchestrator would pick
-      - Repeat penalty: -0.15 if action repeats the last action in history
+      - Repeat penalty: -0.05 if action repeats the last action in history
+      - Diversity bonus: +0.03 if action is novel (not in history)
       - Parse failure: -0.1 if action can't be parsed as valid JSON
     
     The heuristic tail gives much better reward signal than do_nothing:
@@ -257,7 +257,14 @@ def compute_single_action_reward(
     if action_history and a_str == action_history[-1]:
         repeat_penalty = -0.05
 
-    return episode_score + repeat_penalty
+    # --- Shaping: diversity bonus ---
+    # Small bonus for actions not already in history.
+    # Prevents mode collapse by rewarding exploration of new actions.
+    diversity_bonus = 0.0
+    if a_str not in action_history:
+        diversity_bonus = 0.03
+
+    return episode_score + repeat_penalty + diversity_bonus
 
 
 def _heuristic_complete_episode(
@@ -927,6 +934,7 @@ def main():
         bf16=use_bf16,
         fp16=not use_bf16,
         num_generations=args.num_generations,
+        temperature=1.0,  # Prevent entropy collapse — keep completions diverse
         log_level="info",
         report_to="none",
     )
