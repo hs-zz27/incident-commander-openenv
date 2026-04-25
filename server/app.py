@@ -220,6 +220,7 @@ def create_incident_app() -> FastAPI:
                 "restart_service", "scale_service",
                 "rollback", "clear_cache",
                 "escalate", "do_nothing",
+                "write_runbook",
             ],
             "tasks": tasks_info,
         }
@@ -431,21 +432,20 @@ def create_incident_app() -> FastAPI:
         import torch
 
         state = env.state
-        obs_dict = {
-            "services": {k: v.model_dump() for k, v in state.services.items()},
-            "system_health_score": sum(
-                1 for s in state.services.values()
-                if s.status.value == "healthy"
-            ) / max(len(state.services), 1),
-            "max_steps": 30,
-            "incident_severity": "unknown",
-            "alerts": [],
-            "logs": [],
-            "escalation_tier": 1,
-            "services_at_risk": [],
-            "runbook_memory": [],
-            "metadata": {},
-        }
+
+        # IMPORTANT: Build the prompt input from the environment's real observation
+        # snapshot (not a partial hand-rolled dict). Prompt mismatch here
+        # catastrophically hurts JSON action accuracy and task performance.
+        try:
+            obs = env._build_observation(  # pylint: disable=protected-access
+                reward=0.0,
+                logs=[],
+                metrics_detail=None,
+                log_quality="full",
+            )
+            obs_dict = obs.model_dump()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to build observation for prompt: {e}")
 
         prompt_text = build_obs_prompt(obs_dict, state.step_count + 1, state.actions_taken)
         messages = [{"role": "user", "content": prompt_text}]
