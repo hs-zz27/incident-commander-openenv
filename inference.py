@@ -513,18 +513,6 @@ def run_task(task_name: str, client=None, local_model=None, local_tokenizer=None
             )
             action = decision.action
 
-            # Break mode-collapse loops (e.g., inspect_logs:checkout forever).
-            a_candidate = action.action_type.value
-            if action.service_name:
-                a_candidate += f":{action.service_name}"
-            recent = (
-                action_history[-MAX_REPEAT_ACTIONS:]
-                if len(action_history) >= MAX_REPEAT_ACTIONS
-                else []
-            )
-            if len(recent) == MAX_REPEAT_ACTIONS and all(a == a_candidate for a in recent):
-                action = fallback_action(obs_dict, steps, action_history)
-
             # Build action string for history
             action_str = action.action_type.value
             if action.service_name:

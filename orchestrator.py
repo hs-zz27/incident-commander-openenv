@@ -18,7 +18,7 @@ from server.models import ActionType, IncidentAction
 from server.tasks import TaskDefinition
 
 
-DEP_ORDER = ["database", "cache", "notification", "auth", "payments", "checkout"]
+DEP_ORDER = ["database", "cache", "auth", "notification", "payments", "checkout"]
 
 
 @dataclass(frozen=True)
