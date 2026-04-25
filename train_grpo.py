@@ -250,54 +250,14 @@ def compute_single_action_reward(
     episode_score = grade["score"]
     env.close()
 
-    # --- Shaping bonus: orchestrator alignment ---
-    # Compare the model's action to what the orchestrator's heuristic would choose.
-    # This teaches the model to output orchestrator-aligned actions directly.
-    alignment_bonus = 0.0
-    try:
-        from orchestrator import choose_heuristic_action, _infer_root_cause
-        from server.tasks import get_task
-        task = get_task(task_name)
-
-        # Rebuild obs from a fresh replay to get the state before our action
-        env2 = IncidentCommanderEnvironment()
-        obs2 = env2.reset(task_name=task_name, seed=seed)
-        for past_action_str in action_history:
-            if obs2.done:
-                break
-            parts2 = past_action_str.split(":", 1)
-            at2 = parts2[0]
-            sn2 = parts2[1] if len(parts2) > 1 else None
-            try:
-                a2 = IncidentAction(action_type=at2, service_name=sn2)
-            except Exception:
-                a2 = IncidentAction(action_type=ActionType.DO_NOTHING)
-            obs2 = env2.step(a2)
-        obs2_dict = obs2.model_dump()
-        env2.close()
-
-        optimal = choose_heuristic_action(
-            obs2_dict, len(action_history) + 1, action_history, task,
-        )
-        optimal_str = optimal.action_type.value
-        if optimal.service_name:
-            optimal_str += f":{optimal.service_name}"
-
-        if a_str == optimal_str:
-            alignment_bonus = 0.15   # Exact match
-        elif action.action_type.value == optimal.action_type.value:
-            alignment_bonus = 0.05   # Right type, wrong service
-        else:
-            alignment_bonus = -0.05  # Wrong action type
-    except Exception:
-        pass  # Don't crash reward if orchestrator import fails
-
-    # --- Shaping bonus: repeat penalty ---
+    # --- Shaping: repeat penalty (mild) ---
+    # Discourage outputting the exact same action as the last one in history.
+    # Keep it mild (-0.05) to avoid distorting the episode score too much.
     repeat_penalty = 0.0
     if action_history and a_str == action_history[-1]:
-        repeat_penalty = -0.15
+        repeat_penalty = -0.05
 
-    return episode_score + alignment_bonus + repeat_penalty
+    return episode_score + repeat_penalty
 
 
 def _heuristic_complete_episode(
