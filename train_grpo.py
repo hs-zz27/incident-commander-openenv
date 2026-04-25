@@ -41,7 +41,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from server.environment import IncidentCommanderEnvironment
 from server.models import IncidentAction, ActionType
-from server.tasks import list_tasks
+from server.tasks import list_tasks, get_task
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +267,117 @@ def compute_single_action_reward(
     return episode_score + repeat_penalty + diversity_bonus
 
 
+def compute_direct_action_reward(
+    task_name: str,
+    action_text: str,
+    action_history: List[str],
+    seed: Optional[int] = None,
+) -> float:
+    """
+    Direct-action reward (v5): score the *next action itself* (no heuristic tail).
+
+    Key design goals:
+    - Create large reward gaps between "spam inspect" vs correct recovery actions.
+    - Use the SAME fuzzy parser as real inference (evaluate_trained.parse_action).
+    - Still reward early diagnostics, but penalize late diagnostics.
+    """
+    # Use shared fuzzy parser (same as eval/inference)
+    try:
+        from evaluate_trained import parse_action as fuzzy_parse
+    except Exception:
+        fuzzy_parse = None
+
+    env = IncidentCommanderEnvironment()
+    obs = env.reset(task_name=task_name, seed=seed)
+
+    # Replay history to reach the same state
+    for past_action_str in action_history:
+        if obs.done:
+            break
+        parts = past_action_str.split(":", 1)
+        try:
+            action = IncidentAction(
+                action_type=parts[0],
+                service_name=parts[1] if len(parts) > 1 else None,
+            )
+        except Exception:
+            action = IncidentAction(action_type=ActionType.DO_NOTHING)
+        obs = env.step(action)
+
+    prev_health = obs.system_health_score
+    step = len(action_history) + 1
+
+    # Parse the new action
+    parsed: Optional[IncidentAction] = None
+    if fuzzy_parse is not None:
+        try:
+            parsed = fuzzy_parse(action_text)
+        except Exception:
+            parsed = None
+    if parsed is None:
+        # Fallback to strict JSON only
+        try:
+            text = action_text.strip()
+            if text.startswith("```"):
+                lines = [l for l in text.split("\n") if not l.strip().startswith("```")]
+                text = "\n".join(lines).strip()
+            data = json.loads(text)
+            parsed = IncidentAction(**data)
+        except Exception:
+            env.close()
+            return -0.3
+
+    # Execute and measure
+    obs2 = env.step(parsed) if not obs.done else obs
+    health_delta = obs2.system_health_score - prev_health
+
+    task = get_task(task_name)
+    a_str = parsed.action_type.value
+    if parsed.service_name:
+        a_str += f":{parsed.service_name}"
+
+    # Build inspected set from history (for diagnostics gating)
+    inspected = set()
+    for h in action_history:
+        if h.startswith("inspect_") and ":" in h:
+            inspected.add(h.split(":", 1)[1])
+    found_root = task.root_cause_service in inspected
+
+    score = 0.0
+
+    # Strong signals: correct recovery action (but gate full bonus on diagnostics done)
+    if a_str in task.correct_recovery_actions:
+        score += 0.5 if found_root else 0.15
+
+    # Health improvement
+    score += health_delta * 3.0
+
+    # Early diagnostics bonus
+    if step <= 2 and parsed.action_type.value.startswith("inspect_"):
+        if parsed.service_name == task.root_cause_service:
+            score += 0.25
+        else:
+            score += 0.05
+
+    # Late diagnostics penalty
+    if step > 2 and parsed.action_type.value.startswith("inspect_"):
+        score -= 0.15
+
+    # Repeat penalty (strong)
+    if a_str in action_history:
+        score -= 0.25
+
+    # Runbook timing (teach correct pattern, even if env gating differs)
+    if parsed.action_type == ActionType.WRITE_RUNBOOK:
+        if prev_health >= 0.95:
+            score += 0.15
+        else:
+            score -= 0.1
+
+    env.close()
+    return max(-0.5, min(1.0, score))
+
+
 def _heuristic_complete_episode(
     env: IncidentCommanderEnvironment,
     obs,
@@ -438,6 +549,7 @@ def incident_reward_func(completions, task_name, seed, action_history=None, **kw
     if action_history is None:
         action_history = ["[]"] * len(completions)
 
+    reward_mode = kwargs.get("reward_mode", "tail")
     rewards = []
     for completion, tn, s, ah_json in zip(completions, task_name, seed, action_history):
         # Extract text content from the completion message(s)
@@ -453,13 +565,21 @@ def incident_reward_func(completions, task_name, seed, action_history=None, **kw
         except (json.JSONDecodeError, TypeError):
             ah = []
 
-        score = compute_single_action_reward(
-            task_name=tn,
-            obs_dict={},
-            action_text=text,
-            action_history=ah,
-            seed=int(s),
-        )
+        if reward_mode == "direct":
+            score = compute_direct_action_reward(
+                task_name=tn,
+                action_text=text,
+                action_history=ah,
+                seed=int(s),
+            )
+        else:
+            score = compute_single_action_reward(
+                task_name=tn,
+                obs_dict={},
+                action_text=text,
+                action_history=ah,
+                seed=int(s),
+            )
         rewards.append(float(score))
     return rewards
 
@@ -468,7 +588,11 @@ def incident_reward_func(completions, task_name, seed, action_history=None, **kw
 # Dataset builder (P0 fix: explicit task_name + seed metadata per sample)
 # ---------------------------------------------------------------------------
 
-def build_training_dataset(reward_fn: IncidentCommanderRewardFunction, num_seeds: int = 5):
+def build_training_dataset(
+    reward_fn: IncidentCommanderRewardFunction,
+    num_seeds: int = 5,
+    snapshot_steps: Optional[List[int]] = None,
+):
     """
     Build a HuggingFace Dataset with prompt + explicit task metadata.
 
@@ -489,7 +613,7 @@ def build_training_dataset(reward_fn: IncidentCommanderRewardFunction, num_seeds
     from datasets import Dataset
 
     # Snapshot points: which steps to capture observations at
-    snapshot_steps = [1, 3, 5]
+    snapshot_steps = snapshot_steps or [1, 3, 5]
 
     rows = []
     for task_name in reward_fn.TASKS:
@@ -772,6 +896,19 @@ def main():
                         help="Number of completions per prompt (GRPO group size)")
     parser.add_argument("--num-seeds", type=int, default=3,
                         help="Number of seeds per task for dataset diversity")
+    parser.add_argument(
+        "--reward-mode",
+        type=str,
+        default="tail",
+        choices=["tail", "direct"],
+        help="Reward computation mode: tail=heuristic-tail rollout (default), direct=score next action only",
+    )
+    parser.add_argument(
+        "--snapshot-steps",
+        type=str,
+        default="1,3,5",
+        help="Comma-separated snapshot steps for dataset prompts (e.g. 1,2,3,4,5,6)",
+    )
     parser.add_argument("--gradient-accumulation-steps", type=int, default=None,
                         help="Gradient accumulation steps. Auto-computed if not set to satisfy "
                              "TRL constraint: (batch_size x grad_accum) must be divisible by num_generations")
@@ -916,7 +1053,18 @@ def main():
     # --- Step 2: Build training dataset with explicit metadata ---
     reward_fn = IncidentCommanderRewardFunction()
     print(f"\nBuilding training dataset ({len(reward_fn.TASKS)} tasks × {args.num_seeds} seeds)...")
-    dataset = build_training_dataset(reward_fn, num_seeds=args.num_seeds)
+    try:
+        snap = [int(x.strip()) for x in str(args.snapshot_steps).split(",") if x.strip()]
+        if not snap:
+            snap = [1, 3, 5]
+    except Exception:
+        snap = [1, 3, 5]
+
+    dataset = build_training_dataset(
+        reward_fn,
+        num_seeds=args.num_seeds,
+        snapshot_steps=snap,
+    )
     print(f"  Dataset size: {len(dataset)} samples")
     print(f"  Columns: {dataset.column_names}")
 
@@ -948,7 +1096,7 @@ def main():
     print(f"\nInitializing GRPOTrainer...")
     trainer_kwargs: Dict[str, Any] = {
         "model": model,
-        "reward_funcs": [incident_reward_func],
+        "reward_funcs": [lambda *a, **k: incident_reward_func(*a, **(k | {"reward_mode": args.reward_mode}))],
         "args": config,
         "train_dataset": dataset,
     }

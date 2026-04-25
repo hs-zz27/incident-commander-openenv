@@ -109,6 +109,97 @@ HEURISTIC_STRATEGIES: Dict[str, List[IncidentAction]] = {
     ],
 }
 
+def _ensure_runbook(actions: List[IncidentAction]) -> List[IncidentAction]:
+    """Ensure trajectories end with a write_runbook action (teaches the token pattern)."""
+    if actions and actions[-1].action_type == ActionType.WRITE_RUNBOOK:
+        return actions
+    return list(actions) + [IncidentAction(action_type=ActionType.WRITE_RUNBOOK)]
+
+
+# Recovery-focused strategies: teach "inspect briefly, then FIX" (v5 diversity layer)
+RECOVERY_FOCUSED_STRATEGIES: Dict[str, List[IncidentAction]] = {
+    "single_service_failure": _ensure_runbook([
+        IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="cache"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="cache"),
+    ]),
+    "cascading_failure": _ensure_runbook([
+        IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="database"),
+        IncidentAction(action_type=ActionType.SCALE_SERVICE, service_name="database"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="database"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="auth"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="payments"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="checkout"),
+    ]),
+    "hidden_root_cause": _ensure_runbook([
+        IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="auth"),
+        IncidentAction(action_type=ActionType.ROLLBACK, service_name="auth"),
+        IncidentAction(action_type=ActionType.CLEAR_CACHE),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="payments"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="checkout"),
+    ]),
+    "chaos_cascade": _ensure_runbook([
+        IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="database"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="database"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="auth"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="payments"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="checkout"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="notification"),
+    ]),
+    "multi_root_cause": _ensure_runbook([
+        IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="auth"),
+        IncidentAction(action_type=ActionType.ROLLBACK, service_name="auth"),
+        IncidentAction(action_type=ActionType.SCALE_SERVICE, service_name="database"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="database"),
+        IncidentAction(action_type=ActionType.CLEAR_CACHE),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="payments"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="checkout"),
+    ]),
+}
+
+
+# Diverse ordering strategies: valid alternate diagnostic ordering (still resolves)
+DIVERSE_ORDERING_STRATEGIES: Dict[str, List[IncidentAction]] = {
+    "single_service_failure": _ensure_runbook([
+        IncidentAction(action_type=ActionType.INSPECT_METRICS, service_name="auth"),
+        IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="cache"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="cache"),
+    ]),
+    "cascading_failure": _ensure_runbook([
+        IncidentAction(action_type=ActionType.INSPECT_METRICS, service_name="database"),
+        IncidentAction(action_type=ActionType.SCALE_SERVICE, service_name="database"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="database"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="auth"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="payments"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="checkout"),
+    ]),
+    "hidden_root_cause": _ensure_runbook([
+        IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="checkout"),
+        IncidentAction(action_type=ActionType.INSPECT_METRICS, service_name="auth"),
+        IncidentAction(action_type=ActionType.ROLLBACK, service_name="auth"),
+        IncidentAction(action_type=ActionType.CLEAR_CACHE),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="payments"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="checkout"),
+    ]),
+    "chaos_cascade": _ensure_runbook([
+        IncidentAction(action_type=ActionType.INSPECT_METRICS, service_name="database"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="database"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="auth"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="payments"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="checkout"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="notification"),
+    ]),
+    "multi_root_cause": _ensure_runbook([
+        IncidentAction(action_type=ActionType.INSPECT_METRICS, service_name="database"),
+        IncidentAction(action_type=ActionType.SCALE_SERVICE, service_name="database"),
+        IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name="auth"),
+        IncidentAction(action_type=ActionType.ROLLBACK, service_name="auth"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="database"),
+        IncidentAction(action_type=ActionType.CLEAR_CACHE),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="payments"),
+        IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name="checkout"),
+    ]),
+}
+
 
 # ---------------------------------------------------------------------------
 # Trajectory generation
@@ -199,6 +290,8 @@ def build_sft_dataset(num_seeds: int = 8) -> List[Dict[str, Any]]:
     strategies = {
         "expert": EXPERT_STRATEGIES,
         "heuristic": HEURISTIC_STRATEGIES,
+        "recovery": RECOVERY_FOCUSED_STRATEGIES,
+        "diverse": DIVERSE_ORDERING_STRATEGIES,
     }
 
     for label, strategy_dict in strategies.items():
@@ -439,7 +532,7 @@ Examples:
     print(f"  Base model:  {args.model}")
     print(f"  Tasks:       {len(ALL_TASKS)} ({', '.join(ALL_TASKS)})")
     print(f"  Seeds/task:  {args.num_seeds}")
-    print(f"  Strategies:  expert + heuristic")
+    print(f"  Strategies:  expert + heuristic + recovery + diverse")
     print()
 
     print("Phase 1: Generating expert/heuristic trajectories...")
