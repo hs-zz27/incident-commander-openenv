@@ -744,6 +744,9 @@ def main():
                         help="Number of completions per prompt (GRPO group size)")
     parser.add_argument("--num-seeds", type=int, default=3,
                         help="Number of seeds per task for dataset diversity")
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=None,
+                        help="Gradient accumulation steps. Auto-computed if not set to satisfy "
+                             "TRL constraint: (batch_size x grad_accum) must be divisible by num_generations")
 
     # Checkpointing options (P1)
     parser.add_argument("--save-steps", type=int, default=50,
@@ -758,11 +761,30 @@ def main():
     results_dir = Path(__file__).parent / "results"
     results_dir.mkdir(exist_ok=True)
 
+    # Auto-compute gradient_accumulation_steps if not explicitly set.
+    # TRL constraint: (per_device_batch_size × grad_accum) % num_generations == 0
+    if args.gradient_accumulation_steps is not None:
+        grad_accum = args.gradient_accumulation_steps
+        effective = args.batch_size * grad_accum
+        if effective % args.num_generations != 0:
+            print(f"ERROR: batch_size({args.batch_size}) × grad_accum({grad_accum}) = {effective} "
+                  f"is not divisible by num_generations({args.num_generations})", file=sys.stderr)
+            sys.exit(1)
+    else:
+        # Find smallest grad_accum >= 1 that satisfies the constraint
+        grad_accum = args.num_generations  # start with num_generations as upper bound
+        for ga in range(1, args.num_generations + 1):
+            if (args.batch_size * ga) % args.num_generations == 0:
+                grad_accum = ga
+                break
+
+    effective_batch = args.batch_size * grad_accum
+
     print(f"{'='*60}")
     print(f"  GRPO Training — Incident Commander")
     print(f"  Model: {args.model}")
     print(f"  Steps: {args.steps}")
-    print(f"  Batch size: {args.batch_size}")
+    print(f"  Batch size: {args.batch_size}  grad_accum: {grad_accum}  effective: {effective_batch}")
     print(f"  Learning rate: {args.lr}")
     if args.use_lora:
         print(f"  LoRA: enabled")
@@ -877,7 +899,7 @@ def main():
         learning_rate=args.lr,
         logging_steps=args.log_every,
         save_steps=args.save_steps,
-        gradient_accumulation_steps=2,
+        gradient_accumulation_steps=grad_accum,
         bf16=use_bf16,
         fp16=not use_bf16,
         num_generations=args.num_generations,
