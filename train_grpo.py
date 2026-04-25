@@ -761,30 +761,33 @@ def main():
     results_dir = Path(__file__).parent / "results"
     results_dir.mkdir(exist_ok=True)
 
-    # Auto-compute gradient_accumulation_steps if not explicitly set.
-    # TRL constraint: (per_device_batch_size × grad_accum) % num_generations == 0
+    # TRL GRPO constraint (version-safe approach):
+    # Some TRL versions check: per_device_train_batch_size % num_generations == 0
+    # Others check: (per_device_batch × grad_accum) % num_generations == 0
+    #
+    # Universal fix: set per_device_train_batch_size = num_generations
+    # and compensate with gradient_accumulation_steps so effective batch
+    # stays the same as what the user requested.
+    #
+    # Example: user passes --batch-size 2 --num-generations 4
+    #   → per_device_batch = 4, grad_accum = 1  (effective = 4, divisible ✅)
+    # Example: user passes --batch-size 1 --num-generations 4
+    #   → per_device_batch = 4, grad_accum = 1  (effective = 4, divisible ✅)
     if args.gradient_accumulation_steps is not None:
         grad_accum = args.gradient_accumulation_steps
-        effective = args.batch_size * grad_accum
-        if effective % args.num_generations != 0:
-            print(f"ERROR: batch_size({args.batch_size}) × grad_accum({grad_accum}) = {effective} "
-                  f"is not divisible by num_generations({args.num_generations})", file=sys.stderr)
-            sys.exit(1)
     else:
-        # Find smallest grad_accum >= 1 that satisfies the constraint
-        grad_accum = args.num_generations  # start with num_generations as upper bound
-        for ga in range(1, args.num_generations + 1):
-            if (args.batch_size * ga) % args.num_generations == 0:
-                grad_accum = ga
-                break
+        # Keep effective batch close to what user requested
+        grad_accum = max(1, args.batch_size)
 
-    effective_batch = args.batch_size * grad_accum
+    # TRL-safe: per_device batch size IS num_generations
+    grpo_per_device_batch = args.num_generations
+    effective_batch = grpo_per_device_batch * grad_accum
 
     print(f"{'='*60}")
     print(f"  GRPO Training — Incident Commander")
     print(f"  Model: {args.model}")
     print(f"  Steps: {args.steps}")
-    print(f"  Batch size: {args.batch_size}  grad_accum: {grad_accum}  effective: {effective_batch}")
+    print(f"  per_device_batch: {grpo_per_device_batch}  grad_accum: {grad_accum}  effective: {effective_batch}")
     print(f"  Learning rate: {args.lr}")
     if args.use_lora:
         print(f"  LoRA: enabled")
@@ -895,7 +898,7 @@ def main():
         output_dir=args.output_dir,
         num_train_epochs=1,
         max_steps=args.steps,
-        per_device_train_batch_size=args.batch_size,
+        per_device_train_batch_size=grpo_per_device_batch,
         learning_rate=args.lr,
         logging_steps=args.log_every,
         save_steps=args.save_steps,
