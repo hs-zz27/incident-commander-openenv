@@ -273,9 +273,11 @@ class TrainedAgent:
             outputs = self._model.generate(
                 **inputs,
                 max_new_tokens=self._max_new_tokens,
-                temperature=0.1,
-                do_sample=True,
-                top_p=0.9,
+                do_sample=False,
+                temperature=1.0,
+                top_p=1.0,
+                top_k=None,
+                repetition_penalty=1.0,
                 pad_token_id=self._tokenizer.pad_token_id,
             )
 
@@ -287,6 +289,15 @@ class TrainedAgent:
         action = self._parse_action(response)
         if action is None:
             # Fallback to heuristic on parse failure
+            return HeuristicAgent().act(obs_dict, action_history)
+
+        # Guard against model collapse loops by switching this step to heuristic.
+        max_repeats = 2
+        a_candidate = action.action_type.value
+        if action.service_name:
+            a_candidate += f":{action.service_name}"
+        recent = action_history[-max_repeats:] if len(action_history) >= max_repeats else []
+        if len(recent) == max_repeats and all(a == a_candidate for a in recent):
             return HeuristicAgent().act(obs_dict, action_history)
 
         return action

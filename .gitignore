@@ -34,6 +34,11 @@ results/
 # Training artifacts
 trained_model*/
 checkpoint-*/
+sft_adapter_*/
+sft_merged_*/
+*.safetensors
+*.bin
+*.zip
 
 sft_warmstart_adapter_final/
 sft_merged_model_final/
@@ -62,3 +67,7 @@ sft_warmstart_adapter_final/
 evaluation_results.json
 training_log.json
 sft_dataset.json
+
+# Frontend build/deps
+frontend_app/node_modules/
+frontend_app/.next/

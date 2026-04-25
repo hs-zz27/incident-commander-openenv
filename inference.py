@@ -66,6 +66,7 @@ MODEL_NAME = os.getenv("MODEL_NAME") or "gpt-4o-mini"
 
 BENCHMARK_NAME = "incident_commander_env"
 MAX_RETRIES = 3
+MAX_REPEAT_ACTIONS = 2
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +391,7 @@ def load_local_model(base_model: str, adapter_path: str, device: str):
 def generate_local_action(
     model, tokenizer,
     obs_dict, step, action_history,
+    deterministic: bool = True,
 ) -> str:
     """
     Generate action using the trained model with TRAINING-ALIGNED prompts.
@@ -415,15 +417,24 @@ def generate_local_action(
     inputs = tokenizer(input_text, return_tensors="pt", truncation=True, max_length=2048)
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
+    gen_kwargs = {
+        "max_new_tokens": 64,
+        "pad_token_id": tokenizer.pad_token_id,
+        # Override adapter/merged generation config to keep JSON stable.
+        "repetition_penalty": 1.0,
+    }
+    if deterministic:
+        gen_kwargs["do_sample"] = False
+        gen_kwargs["temperature"] = 1.0
+        gen_kwargs["top_p"] = 1.0
+        gen_kwargs["top_k"] = None
+    else:
+        gen_kwargs["do_sample"] = True
+        gen_kwargs["temperature"] = 0.2
+        gen_kwargs["top_p"] = 0.9
+
     with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=64,
-            temperature=0.1,
-            do_sample=True,
-            top_p=0.9,
-            pad_token_id=tokenizer.pad_token_id,
-        )
+        outputs = model.generate(**inputs, **gen_kwargs)
 
     generated = outputs[0][inputs["input_ids"].shape[1]:]
     return tokenizer.decode(generated, skip_special_tokens=True).strip()
@@ -496,6 +507,18 @@ def run_task(task_name: str, client=None, local_model=None, local_tokenizer=None
                             )
 
             if action is None:
+                action = fallback_action(obs_dict, steps, action_history)
+
+            # Break mode-collapse loops (e.g., inspect_logs:checkout forever).
+            a_candidate = action.action_type.value
+            if action.service_name:
+                a_candidate += f":{action.service_name}"
+            recent = (
+                action_history[-MAX_REPEAT_ACTIONS:]
+                if len(action_history) >= MAX_REPEAT_ACTIONS
+                else []
+            )
+            if len(recent) == MAX_REPEAT_ACTIONS and all(a == a_candidate for a in recent):
                 action = fallback_action(obs_dict, steps, action_history)
 
             # Build action string for history
