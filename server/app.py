@@ -77,6 +77,12 @@ class TaskListResponse(BaseModel):
     tasks: list
 
 
+class PredictRequest(BaseModel):
+    base_model: str = Field(default="Qwen/Qwen2.5-0.5B-Instruct", description="Base model name")
+    adapter_path: str = Field(default="trained_model_full_0p5b", description="LoRA adapter path")
+    device: str = Field(default="auto", description="Device: auto, cpu, cuda, mps")
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -358,15 +364,6 @@ def create_incident_app() -> FastAPI:
     # ---- Trained Model Predict Endpoint ----
     # Lazy-loaded model state
     _model_state = {"model": None, "tokenizer": None, "loaded": False, "error": None}
-
-    class PredictRequest(BaseModel):
-        base_model: str = Field(
-            default="Qwen/Qwen2.5-0.5B-Instruct", description="Base model name"
-        )
-        adapter_path: str = Field(
-            default="trained_model_full_0p5b", description="LoRA adapter path"
-        )
-        device: str = Field(default="auto", description="Device: auto, cpu, cuda, mps")
 
     @app.post("/predict")
     async def predict(request: PredictRequest = None):
