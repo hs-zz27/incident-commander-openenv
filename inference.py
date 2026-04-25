@@ -193,40 +193,33 @@ def observation_to_prompt(
 # ---------------------------------------------------------------------------
 
 def parse_action(response_text: str) -> Optional[IncidentAction]:
-    """Parse the LLM response text into an IncidentAction."""
-    text = response_text.strip()
-
-    # Strip markdown code fences if present
-    if text.startswith("```"):
-        lines = text.split("\n")
-        lines = [l for l in lines if not l.strip().startswith("```")]
-        text = "\n".join(lines).strip()
-
+    """Parse LLM response into IncidentAction with fuzzy action matching."""
+    # Use the shared fuzzy parser from evaluate_trained.py
     try:
-        data = json.loads(text)
-        return IncidentAction(**data)
-    except Exception:
+        from evaluate_trained import parse_action as fuzzy_parse
+        return fuzzy_parse(response_text)
+    except ImportError:
         pass
 
-    # Try to extract JSON from the response
-    for start_char in ["{", "["]:
-        idx = text.find(start_char)
-        if idx >= 0:
-            # Find matching close
-            end_char = "}" if start_char == "{" else "]"
-            depth = 0
-            for i in range(idx, len(text)):
-                if text[i] == start_char:
-                    depth += 1
-                elif text[i] == end_char:
-                    depth -= 1
-                    if depth == 0:
-                        try:
-                            data = json.loads(text[idx : i + 1])
-                            return IncidentAction(**data)
-                        except Exception:
-                            break
+    # Inline fallback if evaluate_trained not available
+    text = response_text.strip()
+    if "```" in text:
+        lines = [l for l in text.split("\n") if not l.strip().startswith("```")]
+        text = "\n".join(lines).strip()
 
+    idx = text.find("{")
+    if idx >= 0:
+        depth = 0
+        for i in range(idx, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return IncidentAction(**json.loads(text[idx:i+1]))
+                    except Exception:
+                        break
     return None
 
 
@@ -418,10 +411,11 @@ def generate_local_action(
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=64,
-            temperature=0.1,
-            do_sample=True,
-            top_p=0.9,
+            max_new_tokens=128,
+            do_sample=False,
+            temperature=1.0,
+            top_p=1.0,
+            repetition_penalty=1.0,
             pad_token_id=tokenizer.pad_token_id,
         )
 
@@ -450,6 +444,8 @@ def run_task(task_name: str, client=None, local_model=None, local_tokenizer=None
         obs = env.reset(task_name=task_name)
         obs_dict = obs.model_dump()
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+        MAX_REPEATS = 3  # repeat guard threshold
 
         while not obs.done:
             steps += 1
@@ -494,6 +490,15 @@ def run_task(task_name: str, client=None, local_model=None, local_tokenizer=None
                                 f"WARNING: LLM failed after {MAX_RETRIES} retries: {e}",
                                 file=sys.stderr,
                             )
+
+            # Repeat guard: if model outputs same action 3x in a row, use fallback
+            if action is not None:
+                a_check = action.action_type.value
+                if action.service_name:
+                    a_check += f":{action.service_name}"
+                recent = action_history[-MAX_REPEATS:] if len(action_history) >= MAX_REPEATS else []
+                if len(recent) == MAX_REPEATS and all(a == a_check for a in recent):
+                    action = fallback_action(obs_dict, steps, action_history)
 
             if action is None:
                 action = fallback_action(obs_dict, steps, action_history)
