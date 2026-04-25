@@ -1,0 +1,73 @@
+{
+  "timestamp": "2026-04-24T23:59:18",
+  "episodes": 2,
+  "device": "cpu",
+  "expert": {
+    "single_service_failure": {
+      "score": 0.85
+    },
+    "cascading_failure": {
+      "score": 0.9
+    },
+    "hidden_root_cause": {
+      "score": 0.75
+    },
+    "chaos_cascade": {
+      "score": 0.86
+    },
+    "multi_root_cause": {
+      "score": 0.9
+    }
+  },
+  "heuristic": {
+    "single_service_failure": {
+      "score": 0.7667
+    },
+    "cascading_failure": {
+      "score": 0.7
+    },
+    "hidden_root_cause": {
+      "score": 0.75
+    },
+    "chaos_cascade": {
+      "score": 0.74
+    },
+    "multi_root_cause": {
+      "score": 0.7333
+    }
+  },
+  "naive": {
+    "single_service_failure": {
+      "score": 0.75
+    },
+    "cascading_failure": {
+      "score": 0.55
+    },
+    "hidden_root_cause": {
+      "score": 0.17
+    },
+    "chaos_cascade": {
+      "score": 0.71
+    },
+    "multi_root_cause": {
+      "score": 0.55
+    }
+  },
+  "nothing": {
+    "single_service_failure": {
+      "score": 0.09
+    },
+    "cascading_failure": {
+      "score": 0.0133
+    },
+    "hidden_root_cause": {
+      "score": 0.02
+    },
+    "chaos_cascade": {
+      "score": 0.0067
+    },
+    "multi_root_cause": {
+      "score": 0.0133
+    }
+  }
+}

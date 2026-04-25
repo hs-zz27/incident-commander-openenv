@@ -4,10 +4,9 @@ __pycache__/
 *$py.class
 
 # Virtual environments
-.venv/
+.venv*/
 venv/
 env/
-.venv310/
 
 # Distribution
 dist/
