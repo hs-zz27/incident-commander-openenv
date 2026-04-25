@@ -499,7 +499,7 @@ Examples:
     use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
 
     # SFT hyperparameters — tuned for short warm-start, not full fine-tuning
-    sft_config = SFTConfig(
+    sft_kwargs = dict(
         output_dir=args.output_dir,
         num_train_epochs=args.epochs,
         per_device_train_batch_size=args.batch_size,
@@ -512,12 +512,15 @@ Examples:
         save_total_limit=2,
         bf16=use_bf16,
         fp16=not use_bf16 and torch.cuda.is_available(),
-        max_seq_length=2048,
         gradient_accumulation_steps=2,
         report_to="none",
-        # Packing=False for conversational format correctness
         packing=False,
     )
+    # max_seq_length was removed in TRL >= 0.17; try with it, fall back without
+    try:
+        sft_config = SFTConfig(max_seq_length=2048, **sft_kwargs)
+    except TypeError:
+        sft_config = SFTConfig(**sft_kwargs)
 
     trainer_kwargs: Dict[str, Any] = {
         "model": model,
