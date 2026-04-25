@@ -174,6 +174,7 @@ class IncidentCommanderEnvironment:
         self._runbook_written = False
         self._runbook_correct = False
         self._runbook_used = False
+        self._resolved_grace_step = False
 
         self._state = IncidentState(
             episode_id=episode_id or str(uuid4()),
@@ -301,12 +302,21 @@ class IncidentCommanderEnvironment:
             raise RuntimeError("Environment not initialised. Call reset() first.")
 
         if self._is_done:
-            return self._build_observation(
-                reward=0.0,
-                logs=[],
-                metrics_detail=None,
-                log_quality="full",
-            )
+            # Grace step: if resolved but agent hasn't written runbook yet,
+            # allow one more step for write_runbook only
+            if (
+                self._state.is_resolved
+                and not self._runbook_written
+                and action.action_type.value == "write_runbook"
+            ):
+                pass  # Fall through to process write_runbook below
+            else:
+                return self._build_observation(
+                    reward=0.0,
+                    logs=[],
+                    metrics_detail=None,
+                    log_quality="full",
+                )
 
         self._state.step_count += 1
         self._last_action_error = None
@@ -319,6 +329,11 @@ class IncidentCommanderEnvironment:
 
         # Build action string for history
         action_str = f"{action_type}:{service_name}" if service_name else action_type
+
+        # If agent had a grace step (system resolved) but didn't write_runbook,
+        # end the episode now — they chose to skip the runbook.
+        if self._resolved_grace_step and action_type != "write_runbook":
+            self._is_done = True
 
         # Validate service name for service-specific actions
         needs_service = action_type in (
@@ -393,26 +408,12 @@ class IncidentCommanderEnvironment:
             self._is_done = True
 
         elif action_type == "write_runbook":
-            # Agent writes runbook — allow when: episode done, near step limit,
-            # OR system is already fully healthy (resolved but _is_done not set yet)
-            curr_health_pre = compute_health_score(self._services)
-            all_healthy_pre = all(
-                s.status == ServiceStatusEnum.HEALTHY for s in self._services.values()
-            )
-            allowed = (
-                self._is_done
-                or self._state.step_count >= self._task.max_steps - 1
-                or (all_healthy_pre and curr_health_pre >= 0.95)
-            )
-            if allowed:
+            # Agent writes runbook — only meaningful at episode end (Audit Fix #7)
+            if self._is_done or self._state.step_count >= self._task.max_steps - 1:
                 summary = action.metadata.get("summary", "") if action.metadata else ""
                 self._runbook_written = True
                 if self._task.root_cause_service.lower() in summary.lower():
                     self._runbook_correct = True
-                # Treat write_runbook as terminal when system is already resolved
-                if all_healthy_pre and curr_health_pre >= 0.95:
-                    self._state.is_resolved = True
-                    self._is_done = True
             else:
                 self._last_action_error = "write_runbook only allowed on final step or after resolution"
 
@@ -470,7 +471,15 @@ class IncidentCommanderEnvironment:
         )
         if all_healthy and curr_health >= 0.95:
             self._state.is_resolved = True
-            self._is_done = True
+            # If agent just wrote a runbook on this step, end now.
+            # Otherwise, give agent one grace step to optionally write_runbook.
+            if action_type == "write_runbook" or self._runbook_written:
+                self._is_done = True
+            else:
+                # Mark resolved but DON'T set _is_done yet.
+                # Next step will end the episode (via the grace step logic
+                # at the top of step(), or via the fallthrough below).
+                self._resolved_grace_step = True
 
         # Check step limit
         if self._state.step_count >= self._task.max_steps:
