@@ -29,6 +29,7 @@ Thumbs.db
 outputs/
 logs/
 evals/
+results/
 
 # Training artifacts
 trained_model*/

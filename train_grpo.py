@@ -182,8 +182,13 @@ def compute_single_action_reward(
     Compute reward for a single action by running a full rollout.
     
     Replays the action history up to this point, then executes the new action,
-    then uses a heuristic fallback to complete the episode.
+    then uses a HEURISTIC FOLLOW-UP to complete the episode (not do_nothing).
     Returns the final episode grade (0.0-1.0).
+    
+    The heuristic tail gives much better reward signal than do_nothing:
+      - A good action (correct inspect/restart) + heuristic tail → high score
+      - A bad action (wrong service, escalate) + heuristic tail → low score
+      - A parse failure → immediate -0.1 penalty
     
     This ensures GRPO gets episode-level rewards that are comparable
     across different completions from the same prompt.
@@ -218,14 +223,103 @@ def compute_single_action_reward(
             return -0.1  # Parse failure penalty
 
         obs = env.step(action)
+        # Track the new action for heuristic context
+        a_str = action.action_type.value
+        if action.service_name:
+            a_str += f":{action.service_name}"
+        tail_history = list(action_history) + [a_str]
+    else:
+        tail_history = list(action_history)
 
-    # Complete episode with do_nothing to get final score
-    while not obs.done:
-        obs = env.step(IncidentAction(action_type=ActionType.DO_NOTHING))
+    # Complete episode with HEURISTIC follow-up (not do_nothing).
+    # This gives a shaped reward: good first actions lead to better heuristic
+    # completions, bad first actions leave the heuristic more to recover from.
+    _heuristic_complete_episode(env, obs, tail_history)
 
     grade = env.grade()
     env.close()
     return grade["score"]
+
+
+def _heuristic_complete_episode(
+    env: IncidentCommanderEnvironment,
+    obs,
+    action_history: List[str],
+    max_followup: int = 8,
+) -> None:
+    """
+    Complete an episode using smart heuristic actions.
+    
+    Follows the same logic as HeuristicAgent in run_baselines.py:
+    inspect → rollback version mismatches → clear cache → restart in dep order.
+    """
+    dep_order = ["database", "cache", "notification", "auth", "payments", "checkout"]
+
+    for _ in range(max_followup):
+        if obs.done:
+            break
+
+        obs_dict = obs.model_dump()
+        services = obs_dict.get("services", {})
+
+        # Build action history context
+        inspected, restarted, rolled_back = set(), set(), set()
+        cleared = False
+        for a in action_history:
+            if a.startswith("inspect_logs:") or a.startswith("inspect_metrics:"):
+                inspected.add(a.split(":", 1)[1])
+            elif a.startswith("restart_service:"):
+                restarted.add(a.split(":", 1)[1])
+            elif a.startswith("rollback:"):
+                rolled_back.add(a.split(":", 1)[1])
+            elif a == "clear_cache":
+                cleared = True
+
+        # Rank by severity
+        ranked = []
+        for name, svc in services.items():
+            st = svc.get("status", "healthy")
+            ranked.append((0 if st == "down" else (0.5 if st == "degraded" else 1), name, svc))
+        ranked.sort()
+
+        action = None
+
+        # Phase 1: inspect unhealthy
+        for _, n, s in ranked:
+            if s.get("status") != "healthy" and n not in inspected:
+                action = IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name=n)
+                break
+
+        # Phase 2: rollback version mismatches
+        if action is None:
+            for _, n, s in ranked:
+                if s.get("version", "v1.0.0") != "v1.0.0" and n not in rolled_back:
+                    action = IncidentAction(action_type=ActionType.ROLLBACK, service_name=n)
+                    break
+
+        # Phase 3: clear cache
+        if action is None and not cleared:
+            for _, n, s in ranked:
+                if n in ("auth", "checkout") and s.get("status") != "healthy":
+                    action = IncidentAction(action_type=ActionType.CLEAR_CACHE)
+                    break
+
+        # Phase 4: restart in dependency order
+        if action is None:
+            for n in dep_order:
+                svc = services.get(n, {})
+                if svc.get("status") != "healthy" and n not in restarted:
+                    action = IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name=n)
+                    break
+
+        if action is None:
+            action = IncidentAction(action_type=ActionType.DO_NOTHING)
+
+        obs = env.step(action)
+        a_str = action.action_type.value
+        if action.service_name:
+            a_str += f":{action.service_name}"
+        action_history.append(a_str)
 
 
 # ---------------------------------------------------------------------------
@@ -296,25 +390,30 @@ class IncidentCommanderRewardFunction:
 # TRL-compatible reward function (P0 fix: uses explicit metadata, no guessing)
 # ---------------------------------------------------------------------------
 
-def incident_reward_func(completions, task_name, seed, **kwargs):
+def incident_reward_func(completions, task_name, seed, action_history=None, **kwargs):
     """
     TRL GRPOTrainer-compatible reward function.
 
     Called by the trainer for each batch of completions. Receives extra
-    dataset columns (task_name, seed) via **kwargs — no string matching.
+    dataset columns (task_name, seed, action_history) via kwargs.
 
     Args:
         completions: List of model outputs. Each is a list of message dicts
                      e.g. [{"role": "assistant", "content": "..."}].
         task_name:   List of task name strings from the dataset.
         seed:        List of seed ints from the dataset.
+        action_history: List of JSON-encoded action history strings.
         **kwargs:    Any other dataset columns (unused).
 
     Returns:
         List of float rewards, one per completion.
     """
+    # Default to empty history if not provided (backward compat)
+    if action_history is None:
+        action_history = ["[]"] * len(completions)
+
     rewards = []
-    for completion, tn, s in zip(completions, task_name, seed):
+    for completion, tn, s, ah_json in zip(completions, task_name, seed, action_history):
         # Extract text content from the completion message(s)
         if isinstance(completion, list) and len(completion) > 0:
             # TRL sends completions as list of message dicts
@@ -322,11 +421,17 @@ def incident_reward_func(completions, task_name, seed, **kwargs):
         else:
             text = str(completion)
 
+        # Parse action history from JSON string
+        try:
+            ah = json.loads(ah_json) if isinstance(ah_json, str) else list(ah_json)
+        except (json.JSONDecodeError, TypeError):
+            ah = []
+
         score = compute_single_action_reward(
             task_name=tn,
             obs_dict={},
             action_text=text,
-            action_history=[],
+            action_history=ah,
             seed=int(s),
         )
         rewards.append(float(score))
@@ -342,29 +447,118 @@ def build_training_dataset(reward_fn: IncidentCommanderRewardFunction, num_seeds
     Build a HuggingFace Dataset with prompt + explicit task metadata.
 
     Each row contains:
-      - prompt:    Conversational format [{"role": "user", "content": "..."}]
-      - task_name: Explicit task identifier for reward routing
-      - seed:      Seed used to generate this scenario
+      - prompt:         Conversational format [{"role": "user", "content": "..."}]
+      - task_name:      Explicit task identifier for reward routing
+      - seed:           Seed used to generate this scenario
+      - action_history: JSON-encoded list of past action strings (for mid-episode states)
 
-    Multiple seeds per task diversify the training distribution.
+    Generates observations at multiple episode phases:
+      - Step 1: Initial triage (what action to take first?)
+      - Step 3: Mid-investigation (after 2 heuristic actions)
+      - Step 5: Late-stage cleanup (after 4 heuristic actions)
+    
+    This teaches the policy decisions across the full episode lifecycle,
+    not just the opening move.
     """
     from datasets import Dataset
+
+    # Snapshot points: which steps to capture observations at
+    snapshot_steps = [1, 3, 5]
 
     rows = []
     for task_name in reward_fn.TASKS:
         for s in range(num_seeds):
             seed_val = s + 42
+
+            # Step 1: initial observation (no history)
             env = IncidentCommanderEnvironment()
             obs = env.reset(task_name=task_name, seed=seed_val)
             prompt_text = build_obs_prompt(obs.model_dump(), 1, [])
-            env.close()
             rows.append({
                 "prompt": [{"role": "user", "content": prompt_text}],
                 "task_name": task_name,
                 "seed": seed_val,
+                "action_history": json.dumps([]),
             })
 
+            # Mid-episode snapshots: run heuristic actions to reach later states
+            action_history: List[str] = []
+            for step_idx in range(1, max(snapshot_steps)):
+                if obs.done:
+                    break
+
+                # Use heuristic to advance the episode
+                obs_dict = obs.model_dump()
+                services = obs_dict.get("services", {})
+                heuristic_action = _pick_heuristic_action(services, action_history)
+                obs = env.step(heuristic_action)
+
+                a_str = heuristic_action.action_type.value
+                if heuristic_action.service_name:
+                    a_str += f":{heuristic_action.service_name}"
+                action_history.append(a_str)
+
+                # Capture snapshot at target steps (step_idx+1 because we just took step_idx)
+                current_step = step_idx + 1
+                if current_step in snapshot_steps and not obs.done:
+                    prompt_text = build_obs_prompt(
+                        obs.model_dump(), current_step, action_history,
+                    )
+                    rows.append({
+                        "prompt": [{"role": "user", "content": prompt_text}],
+                        "task_name": task_name,
+                        "seed": seed_val,
+                        "action_history": json.dumps(action_history),
+                    })
+
+            env.close()
+
     return Dataset.from_list(rows)
+
+
+def _pick_heuristic_action(
+    services: Dict, action_history: List[str],
+) -> IncidentAction:
+    """Pick a single heuristic action for advancing episodes during dataset generation."""
+    dep_order = ["database", "cache", "notification", "auth", "payments", "checkout"]
+
+    inspected, restarted, rolled_back = set(), set(), set()
+    cleared = False
+    for a in action_history:
+        if a.startswith("inspect_logs:") or a.startswith("inspect_metrics:"):
+            inspected.add(a.split(":", 1)[1])
+        elif a.startswith("restart_service:"):
+            restarted.add(a.split(":", 1)[1])
+        elif a.startswith("rollback:"):
+            rolled_back.add(a.split(":", 1)[1])
+        elif a == "clear_cache":
+            cleared = True
+
+    ranked = []
+    for name, svc in services.items():
+        st = svc.get("status", "healthy")
+        ranked.append((0 if st == "down" else (0.5 if st == "degraded" else 1), name, svc))
+    ranked.sort()
+
+    for _, n, s in ranked:
+        if s.get("status") != "healthy" and n not in inspected:
+            return IncidentAction(action_type=ActionType.INSPECT_LOGS, service_name=n)
+
+    for _, n, s in ranked:
+        if s.get("version", "v1.0.0") != "v1.0.0" and n not in rolled_back:
+            return IncidentAction(action_type=ActionType.ROLLBACK, service_name=n)
+
+    if not cleared:
+        for _, n, s in ranked:
+            if n in ("auth", "checkout") and s.get("status") != "healthy":
+                return IncidentAction(action_type=ActionType.CLEAR_CACHE)
+
+    for n in dep_order:
+        svc = services.get(n, {})
+        if svc.get("status") != "healthy" and n not in restarted:
+            return IncidentAction(action_type=ActionType.RESTART_SERVICE, service_name=n)
+
+    return IncidentAction(action_type=ActionType.DO_NOTHING)
 
 
 # ---------------------------------------------------------------------------

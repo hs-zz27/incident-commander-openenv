@@ -190,8 +190,16 @@ def load_model(base_name: str, adapter_path: str, device: str):
 # Generate action from trained model
 # ---------------------------------------------------------------------------
 
-def generate_action(model, tokenizer, obs_dict: Dict, step: int, action_history: List[str]) -> str:
-    """Generate action using EXACT training prompt format (build_obs_prompt)."""
+def generate_action(
+    model, tokenizer, obs_dict: Dict, step: int,
+    action_history: List[str], deterministic: bool = True,
+) -> str:
+    """Generate action using EXACT training prompt format (build_obs_prompt).
+    
+    Args:
+        deterministic: If True, use greedy decoding for reproducible benchmarks.
+                       If False, use sampling (temperature=0.3) for stress testing.
+    """
     import torch
 
     prompt_text = build_obs_prompt(obs_dict, step, action_history)
@@ -205,11 +213,19 @@ def generate_action(model, tokenizer, obs_dict: Dict, step: int, action_history:
     inputs = tokenizer(input_text, return_tensors="pt", truncation=True, max_length=2048)
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
+    gen_kwargs = {
+        "max_new_tokens": 64,
+        "pad_token_id": tokenizer.pad_token_id,
+    }
+    if deterministic:
+        gen_kwargs["do_sample"] = False
+    else:
+        gen_kwargs["do_sample"] = True
+        gen_kwargs["temperature"] = 0.3
+        gen_kwargs["top_p"] = 0.9
+
     with torch.no_grad():
-        outputs = model.generate(
-            **inputs, max_new_tokens=64, temperature=0.1,
-            do_sample=True, top_p=0.9, pad_token_id=tokenizer.pad_token_id,
-        )
+        outputs = model.generate(**inputs, **gen_kwargs)
 
     generated = outputs[0][inputs["input_ids"].shape[1]:]
     return tokenizer.decode(generated, skip_special_tokens=True).strip()
@@ -250,6 +266,7 @@ def run_heuristic_episode(task_name: str, seed: Optional[int] = None) -> Dict[st
 def run_trained_episode(
     task_name: str, model, tokenizer,
     seed: Optional[int] = None, verbose: bool = False,
+    deterministic: bool = True,
 ) -> Dict[str, Any]:
     """Run one episode with the trained LoRA model."""
     env = IncidentCommanderEnvironment()
@@ -264,7 +281,10 @@ def run_trained_episode(
 
     while not obs.done:
         step = len(action_history) + 1
-        raw = generate_action(model, tokenizer, obs_dict, step, action_history)
+        raw = generate_action(
+            model, tokenizer, obs_dict, step, action_history,
+            deterministic=deterministic,
+        )
         raw_outputs.append(raw)
         action = parse_action(raw)
 
@@ -360,6 +380,8 @@ def main():
     parser.add_argument("--episodes", type=int, default=3, help="Episodes per agent per task")
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--no-model", action="store_true", help="Skip trained model eval")
+    parser.add_argument("--sample", action="store_true",
+                        help="Use sampling instead of deterministic decoding (for stress testing)")
     args = parser.parse_args()
 
     # Auto-detect device
@@ -461,7 +483,8 @@ def main():
             if args.verbose:
                 print(f"  ── {t} ──")
             r = run_multi_episode(
-                run_trained_episode, t, eps, model=model, tokenizer=tokenizer, verbose=args.verbose,
+                run_trained_episode, t, eps, model=model, tokenizer=tokenizer,
+                verbose=args.verbose, deterministic=not args.sample,
             )
             trained[t] = r
             pf = f"parse_fail={r.get('parse_fail_rate', 0):.0%}"
