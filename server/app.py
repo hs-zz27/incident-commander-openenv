@@ -78,8 +78,12 @@ class TaskListResponse(BaseModel):
 
 
 class PredictRequest(BaseModel):
-    base_model: str = Field(default="Qwen/Qwen2.5-0.5B-Instruct", description="Base model name")
-    adapter_path: str = Field(default="trained_model_full_0p5b", description="LoRA adapter path")
+    base_model: str = Field(
+        default="Qwen/Qwen2.5-0.5B-Instruct", description="Base model name"
+    )
+    adapter_path: str = Field(
+        default="trained_model_full_0p5b", description="LoRA adapter path"
+    )
     device: str = Field(default="auto", description="Device: auto, cpu, cuda, mps")
 
 
@@ -507,11 +511,15 @@ def create_incident_app() -> FastAPI:
 
         # Parse JSON action using the shared fuzzy parser
         action_data = None
+        heuristic_action = None
         try:
             sys.path.insert(
                 0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             )
             from evaluate_trained import parse_action as fuzzy_parse
+            from evaluate_trained import heuristic_action as eval_heuristic_action
+
+            heuristic_action = eval_heuristic_action
 
             parsed = fuzzy_parse(response)
             if parsed:
@@ -542,15 +550,15 @@ def create_incident_app() -> FastAPI:
                 a_check += f":{svc}"
             recent = state.actions_taken[-3:] if len(state.actions_taken) >= 3 else []
             if len(recent) == 3 and all(a == a_check for a in recent):
-                # Fall back to smart heuristic
-                from inference import fallback_action
+                obs_for_fallback = _last_observation.model_dump()
+                if heuristic_action is None:
+                    from inference import fallback_action as eval_fallback_action
 
-                obs_for_fallback = {
-                    "services": {k: v.model_dump() for k, v in state.services.items()},
-                }
-                fb = fallback_action(
-                    obs_for_fallback, state.step_count + 1, state.actions_taken
-                )
+                    fb = eval_fallback_action(
+                        obs_for_fallback, state.step_count + 1, state.actions_taken
+                    )
+                else:
+                    fb = heuristic_action(obs_for_fallback, state.actions_taken)
                 action_data = {"action_type": fb.action_type.value}
                 if fb.service_name:
                     action_data["service_name"] = fb.service_name
