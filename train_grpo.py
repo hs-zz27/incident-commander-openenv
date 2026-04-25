@@ -116,7 +116,12 @@ def build_obs_prompt(obs_dict: Dict, step: int, action_history: List[str]) -> st
         lines.append("Previous actions: " + ", ".join(action_history))
 
     lines.append("")
-    lines.append('Respond with a JSON action: {"action_type": "...", "service_name": "..."}')
+    lines.append("Valid action_type values: inspect_logs, inspect_metrics, restart_service, scale_service, rollback, clear_cache, escalate, do_nothing")
+    svc_names = sorted(obs_dict.get("services", {}).keys())
+    if svc_names:
+        lines.append(f"Valid service_name values: {', '.join(svc_names)}")
+    lines.append("")
+    lines.append('Respond with ONLY a JSON object, nothing else: {"action_type": "<valid_action>", "service_name": "<valid_service>"}')
 
     return "\n".join(lines)
 
