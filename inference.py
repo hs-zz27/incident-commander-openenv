@@ -39,7 +39,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from server.environment import IncidentCommanderEnvironment
 from server.models import IncidentAction, ActionType
-from server.tasks import list_tasks
+from server.tasks import list_tasks, get_task
+from orchestrator import orchestrated_action as _orchestrated_action
 
 # Import training prompt builder for --local mode (must match training distribution)
 try:
@@ -411,7 +412,7 @@ def generate_local_action(
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     gen_kwargs = {
-        "max_new_tokens": 64,
+        "max_new_tokens": 128,
         "pad_token_id": tokenizer.pad_token_id,
         # Override adapter/merged generation config to keep JSON stable.
         "repetition_penalty": 1.0,
@@ -441,6 +442,7 @@ def run_task(task_name: str, client=None, local_model=None, local_tokenizer=None
     """Run a single task episode and print results in exact format."""
     use_local = local_model is not None
     env = IncidentCommanderEnvironment()
+    task = get_task(task_name)
     rewards: List[float] = []
     success = False
     score = 0.0
@@ -460,7 +462,7 @@ def run_task(task_name: str, client=None, local_model=None, local_tokenizer=None
         while not obs.done:
             steps += 1
 
-            action = None
+            model_action = None
 
             if use_local:
                 # Local model path — uses training-aligned prompts
@@ -470,8 +472,8 @@ def run_task(task_name: str, client=None, local_model=None, local_tokenizer=None
                             local_model, local_tokenizer,
                             obs_dict, steps, action_history,
                         )
-                        action = parse_action(response_text)
-                        if action:
+                        model_action = parse_action(response_text)
+                        if model_action:
                             break
                     except Exception as e:
                         if attempt == MAX_RETRIES - 1:
@@ -490,8 +492,8 @@ def run_task(task_name: str, client=None, local_model=None, local_tokenizer=None
                             max_tokens=256,
                         )
                         response_text = completion.choices[0].message.content or ""
-                        action = parse_action(response_text)
-                        if action:
+                        model_action = parse_action(response_text)
+                        if model_action:
                             messages.append({"role": "assistant", "content": response_text})
                             break
                     except Exception as e:
@@ -501,17 +503,15 @@ def run_task(task_name: str, client=None, local_model=None, local_tokenizer=None
                                 file=sys.stderr,
                             )
 
-            # Repeat guard: if model outputs same action 3x in a row, use fallback
-            if action is not None:
-                a_check = action.action_type.value
-                if action.service_name:
-                    a_check += f":{action.service_name}"
-                recent = action_history[-MAX_REPEATS:] if len(action_history) >= MAX_REPEATS else []
-                if len(recent) == MAX_REPEATS and all(a == a_check for a in recent):
-                    action = fallback_action(obs_dict, steps, action_history)
-
-            if action is None:
-                action = fallback_action(obs_dict, steps, action_history)
+            # Hybrid orchestrator: route between model and heuristic expert.
+            decision = _orchestrated_action(
+                model_action=model_action,
+                obs_dict=obs_dict,
+                step=steps,
+                action_history=action_history,
+                task=task,
+            )
+            action = decision.action
 
             # Break mode-collapse loops (e.g., inspect_logs:checkout forever).
             a_candidate = action.action_type.value

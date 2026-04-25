@@ -30,6 +30,7 @@ from server.tasks import get_task
 
 from evaluate import EXPERT_STRATEGIES, NAIVE_STRATEGIES, run_strategy
 from train_grpo import build_obs_prompt
+from orchestrator import orchestrated_action as _orchestrated_action
 
 
 # ---------------------------------------------------------------------------
@@ -370,7 +371,7 @@ def run_trained_episode(
     3+ times consecutively, the heuristic agent takes over for that step.
     This prevents mode-collapsed models from looping forever.
     """
-    MAX_REPEATS = 3  # switch to heuristic after this many identical actions
+    task = get_task(task_name)
 
     env = IncidentCommanderEnvironment()
     obs = env.reset(task_name=task_name, seed=seed, episode_id=f"eval-{task_name}", chaos_mode=True)
@@ -379,7 +380,6 @@ def run_trained_episode(
     action_history: List[str] = []
     parse_fails = 0
     fallback_count = 0
-    repeat_fallback_count = 0
     model_action_count = 0
     raw_outputs: List[str] = []
     t0 = time.time()
@@ -391,30 +391,28 @@ def run_trained_episode(
             deterministic=deterministic,
         )
         raw_outputs.append(raw)
-        action = parse_action(raw)
-
-        if action is None:
+        model_action = parse_action(raw)
+        if model_action is None:
             parse_fails += 1
-            fallback_count += 1
-            action = heuristic_action(obs_dict, action_history)
-            if verbose:
-                print(f"    Step {step:2d}: ⚠️  PARSE FAIL raw={raw[:60]!r} → fallback={action.action_type.value}")
-        else:
-            # Check for repetition: has the model outputted the same action N times in a row?
-            a_candidate = action.action_type.value
-            if action.service_name:
-                a_candidate += f":{action.service_name}"
 
-            recent = action_history[-MAX_REPEATS:] if len(action_history) >= MAX_REPEATS else []
-            if len(recent) == MAX_REPEATS and all(a == a_candidate for a in recent):
-                repeat_fallback_count += 1
-                fallback_count += 1
-                action = heuristic_action(obs_dict, action_history)
-                if verbose:
-                    print(f"    Step {step:2d}: 🔄 REPEAT×{MAX_REPEATS} → heuristic={action.action_type.value}"
-                          + (f":{action.service_name}" if action.service_name else ""))
-            else:
-                model_action_count += 1
+        decision = _orchestrated_action(
+            model_action=model_action,
+            obs_dict=obs_dict,
+            step=step,
+            action_history=action_history,
+            task=task,
+        )
+        action = decision.action
+        if not decision.used_model:
+            fallback_count += 1
+            if verbose:
+                msg = "PARSE FAIL" if model_action is None else f"OVERRIDE({decision.reason})"
+                print(
+                    f"    Step {step:2d}: ⚠️  {msg} raw={raw[:60]!r} → {action.action_type.value}"
+                    + (f":{action.service_name}" if action.service_name else "")
+                )
+        else:
+            model_action_count += 1
 
         a_str = action.action_type.value
         if action.service_name:
@@ -425,7 +423,7 @@ def run_trained_episode(
         obs_dict = obs.model_dump()
         r = obs.reward if obs.reward is not None else 0.0
 
-        if verbose and (parse_fails == 0 and repeat_fallback_count == 0 or step <= 3):
+        if verbose and (fallback_count == 0 or step <= 3):
             print(f"    Step {step:2d}: {a_str:28s} health={obs.system_health_score:.4f} r={r:+.4f}")
 
     elapsed = time.time() - t0
@@ -436,7 +434,6 @@ def run_trained_episode(
         "score": grade["score"], "breakdown": grade["breakdown"],
         "is_resolved": grade["is_resolved"], "steps_taken": grade["steps_taken"],
         "parse_fails": parse_fails, "fallback_pct": fallback_count / max(len(action_history), 1),
-        "repeat_fallbacks": repeat_fallback_count,
         "model_actions": model_action_count,
         "actions": action_history, "elapsed_s": round(elapsed, 2),
         "raw_outputs": raw_outputs[:3] if verbose else [],

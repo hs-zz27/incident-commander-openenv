@@ -23,7 +23,8 @@ from pydantic import BaseModel, Field
 
 from .environment import IncidentCommanderEnvironment
 from .models import IncidentAction, IncidentObservation, IncidentState
-from .tasks import list_tasks
+from .tasks import list_tasks, get_task
+from orchestrator import orchestrated_action as _orchestrated_action
 
 logger = logging.getLogger(__name__)
 
@@ -512,6 +513,7 @@ def create_incident_app() -> FastAPI:
         # Parse JSON action using the shared fuzzy parser
         action_data = None
         heuristic_action = None
+        parsed_action = None
         try:
             sys.path.insert(
                 0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -521,17 +523,14 @@ def create_incident_app() -> FastAPI:
 
             heuristic_action = eval_heuristic_action
 
-            parsed = fuzzy_parse(response)
-            if parsed:
-                action_data = {"action_type": parsed.action_type.value}
-                if parsed.service_name:
-                    action_data["service_name"] = parsed.service_name
+            parsed_action = fuzzy_parse(response)
         except ImportError:
             # Fallback: basic JSON extraction
             import json as json_mod
 
             try:
                 action_data = json_mod.loads(response)
+                parsed_action = IncidentAction(**action_data)
             except Exception:
                 idx = response.find("{")
                 if idx >= 0:
@@ -539,33 +538,28 @@ def create_incident_app() -> FastAPI:
                     if end > idx:
                         try:
                             action_data = json_mod.loads(response[idx : end + 1])
+                            parsed_action = IncidentAction(**action_data)
                         except Exception:
                             pass
 
-        # Repeat guard: if same action repeated 3+ times, use fallback
-        if action_data:
-            a_check = action_data.get("action_type", "")
-            svc = action_data.get("service_name", "")
-            if svc:
-                a_check += f":{svc}"
-            recent = state.actions_taken[-3:] if len(state.actions_taken) >= 3 else []
-            if len(recent) == 3 and all(a == a_check for a in recent):
-                obs_for_fallback = _last_observation.model_dump()
-                if heuristic_action is None:
-                    from inference import fallback_action as eval_fallback_action
-
-                    fb = eval_fallback_action(
-                        obs_for_fallback, state.step_count + 1, state.actions_taken
-                    )
-                else:
-                    fb = heuristic_action(obs_for_fallback, state.actions_taken)
-                action_data = {"action_type": fb.action_type.value}
-                if fb.service_name:
-                    action_data["service_name"] = fb.service_name
+        # Hybrid orchestrator: route between model output and deterministic expert policy
+        task = get_task(state.task_name or "single_service_failure")
+        decision = _orchestrated_action(
+            model_action=parsed_action,
+            obs_dict=obs_dict,
+            step=state.step_count + 1,
+            action_history=state.actions_taken,
+            task=task,
+        )
+        final_action = decision.action
+        action_data = {"action_type": final_action.action_type.value}
+        if final_action.service_name:
+            action_data["service_name"] = final_action.service_name
 
         return {
             "raw_response": response,
             "parsed_action": action_data,
+            "routing": {"used_model": decision.used_model, "reason": decision.reason},
             "step": state.step_count + 1,
             "model_device": str(next(model.parameters()).device),
         }
