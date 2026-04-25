@@ -463,32 +463,59 @@ def create_incident_app() -> FastAPI:
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=64,
-                temperature=0.3,
-                do_sample=True,
-                top_p=0.9,
-                repetition_penalty=1.1,
+                max_new_tokens=128,
+                do_sample=False,
+                temperature=1.0,
+                top_p=1.0,
+                repetition_penalty=1.0,
                 pad_token_id=tokenizer.pad_token_id,
             )
 
         generated = outputs[0][inputs["input_ids"].shape[1]:]
         response = tokenizer.decode(generated, skip_special_tokens=True).strip()
 
-        # Parse JSON action
-        import json as json_mod
+        # Parse JSON action using the shared fuzzy parser
         action_data = None
         try:
-            action_data = json_mod.loads(response)
-        except Exception:
-            # Try to extract JSON from response
-            idx = response.find("{")
-            if idx >= 0:
-                end = response.rfind("}")
-                if end > idx:
-                    try:
-                        action_data = json_mod.loads(response[idx:end+1])
-                    except Exception:
-                        pass
+            sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            from evaluate_trained import parse_action as fuzzy_parse
+            parsed = fuzzy_parse(response)
+            if parsed:
+                action_data = {"action_type": parsed.action_type.value}
+                if parsed.service_name:
+                    action_data["service_name"] = parsed.service_name
+        except ImportError:
+            # Fallback: basic JSON extraction
+            import json as json_mod
+            try:
+                action_data = json_mod.loads(response)
+            except Exception:
+                idx = response.find("{")
+                if idx >= 0:
+                    end = response.rfind("}")
+                    if end > idx:
+                        try:
+                            action_data = json_mod.loads(response[idx:end+1])
+                        except Exception:
+                            pass
+
+        # Repeat guard: if same action repeated 3+ times, use fallback
+        if action_data:
+            a_check = action_data.get("action_type", "")
+            svc = action_data.get("service_name", "")
+            if svc:
+                a_check += f":{svc}"
+            recent = state.actions_taken[-3:] if len(state.actions_taken) >= 3 else []
+            if len(recent) == 3 and all(a == a_check for a in recent):
+                # Fall back to smart heuristic
+                from inference import fallback_action
+                obs_for_fallback = {
+                    "services": {k: v.model_dump() for k, v in state.services.items()},
+                }
+                fb = fallback_action(obs_for_fallback, state.step_count + 1, state.actions_taken)
+                action_data = {"action_type": fb.action_type.value}
+                if fb.service_name:
+                    action_data["service_name"] = fb.service_name
 
         return {
             "raw_response": response,
