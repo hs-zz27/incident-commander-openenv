@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Control Center - Professional Incident Commander Dashboard</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Manrope:wght@600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "tertiary-fixed-dim": "#ffb786",
+                        "surface-container": "#171f33",
+                        "surface-container-low": "#131b2e",
+                        "on-primary-container": "#00285d",
+                        "inverse-primary": "#005ac2",
+                        "outline": "#8c909f",
+                        "on-tertiary-fixed-variant": "#723600",
+                        "surface-tint": "#adc6ff",
+                        "secondary-container": "#3a4a5f",
+                        "on-secondary-fixed": "#0b1c30",
+                        "secondary": "#b7c8e1",
+                        "on-tertiary": "#502400",
+                        "surface-variant": "#2d3449",
+                        "secondary-fixed": "#d3e4fe",
+                        "outline-variant": "#424754",
+                        "background": "#0b1326",
+                        "on-error-container": "#ffdad6",
+                        "primary-fixed": "#d8e2ff",
+                        "surface-bright": "#31394d",
+                        "on-surface": "#dae2fd",
+                        "surface-container-lowest": "#060e20",
+                        "on-secondary-fixed-variant": "#38485d",
+                        "on-primary-fixed-variant": "#004395",
+                        "on-secondary-container": "#a9bad3",
+                        "error": "#ffb4ab",
+                        "on-error": "#690005",
+                        "tertiary": "#ffb786",
+                        "on-secondary": "#213145",
+                        "on-primary-fixed": "#001a42",
+                        "surface-container-highest": "#2d3449",
+                        "on-surface-variant": "#c2c6d6",
+                        "inverse-on-surface": "#283044",
+                        "surface-container-high": "#222a3d",
+                        "on-tertiary-fixed": "#311400",
+                        "tertiary-fixed": "#ffdcc6",
+                        "primary-fixed-dim": "#adc6ff",
+                        "tertiary-container": "#df7412",
+                        "primary-container": "#4d8eff",
+                        "inverse-surface": "#dae2fd",
+                        "primary": "#adc6ff",
+                        "on-tertiary-container": "#461f00",
+                        "surface-dim": "#0b1326",
+                        "surface": "#0b1326",
+                        "secondary-fixed-dim": "#b7c8e1",
+                        "error-container": "#93000a",
+                        "on-background": "#dae2fd",
+                        "on-primary": "#002e6a"
+                    },
+                    borderRadius: {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    spacing: {
+                        "stack-lg": "32px",
+                        "container-padding": "24px",
+                        "unit": "4px",
+                        "stack-sm": "8px",
+                        "margin": "32px",
+                        "stack-md": "16px",
+                        "gutter": "24px"
+                    },
+                    fontFamily: {
+                        "label-caps": ["Inter"],
+                        "display": ["Manrope"],
+                        "h1": ["Manrope"],
+                        "caption": ["Inter"],
+                        "body-lg": ["Inter"],
+                        "body-md": ["Inter"],
+                        "h2": ["Manrope"]
+                    },
+                    fontSize: {
+                        "label-caps": ["12px", { lineHeight: "1.0", letterSpacing: "0.08em", fontWeight: "600" }],
+                        "display": ["40px", { lineHeight: "1.2", letterSpacing: "-0.02em", fontWeight: "700" }],
+                        "h1": ["32px", { lineHeight: "1.3", letterSpacing: "-0.01em", fontWeight: "600" }],
+                        "caption": ["13px", { lineHeight: "1.4", letterSpacing: "0.02em", fontWeight: "500" }],
+                        "body-lg": ["18px", { lineHeight: "1.6", letterSpacing: "0.02em", fontWeight: "400" }],
+                        "body-md": ["16px", { lineHeight: "1.6", letterSpacing: "0.01em", fontWeight: "400" }],
+                        "h2": ["24px", { lineHeight: "1.4", letterSpacing: "0.01em", fontWeight: "600" }]
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-background text-on-background min-h-screen flex antialiased">
+<!-- SideNavBar -->
+<nav class="bg-[#0B0F1A] text-blue-500 dark:text-blue-400 font-manrope text-sm uppercase tracking-widest font-semibold h-screen w-64 border-r border-white/5 flex flex-col fixed left-0 top-0 z-50 md:flex hidden">
+<div class="px-6 py-8">
+<h1 class="text-lg font-black text-white font-h2 text-h2 mb-1">Control Center</h1>
+<p class="font-caption text-caption text-on-surface-variant normal-case tracking-normal font-medium">Active Session</p>
+</div>
+<div class="flex flex-col gap-1 w-full flex-grow px-2">
+<!-- Active Tab: Service Map -->
+<a class="flex items-center gap-3 px-4 py-3 bg-blue-600/10 text-blue-400 border-r-2 border-blue-500 rounded-lg hover:bg-white/5 transition-colors duration-150" href="#">
+<span class="material-symbols-outlined text-lg">hub</span>
+<span>Service Map</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-slate-500 hover:text-slate-300 rounded-lg hover:bg-white/5 transition-colors duration-150" href="#">
+<span class="material-symbols-outlined text-lg">segment</span>
+<span>Activity Log</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-slate-500 hover:text-slate-300 rounded-lg hover:bg-white/5 transition-colors duration-150" href="#">
+<span class="material-symbols-outlined text-lg">monitoring</span>
+<span>Performance</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-slate-500 hover:text-slate-300 rounded-lg hover:bg-white/5 transition-colors duration-150" href="#">
+<span class="material-symbols-outlined text-lg">groups</span>
+<span>Team Status</span>
+</a>
+</div>
+<div class="px-4 mt-auto mb-6">
+<button class="w-full bg-primary-container text-on-primary-container font-label-caps text-label-caps py-3 rounded-lg hover:bg-primary transition-colors">
+            System Health
+        </button>
+</div>
+<div class="flex flex-col gap-1 w-full px-2 border-t border-white/5 pt-4 pb-6">
+<a class="flex items-center gap-3 px-4 py-3 text-slate-500 hover:text-slate-300 rounded-lg hover:bg-white/5 transition-colors duration-150" href="#">
+<span class="material-symbols-outlined text-lg">settings</span>
+<span>Settings</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-slate-500 hover:text-slate-300 rounded-lg hover:bg-white/5 transition-colors duration-150" href="#">
+<span class="material-symbols-outlined text-lg">logout</span>
+<span>Log Out</span>
+</a>
+</div>
+</nav>
+<!-- Main Content Wrapper -->
+<div class="flex-1 md:pl-64 flex flex-col min-h-screen">
+<!-- TopAppBar -->
+<header class="bg-[#1E293B]/60 backdrop-blur-xl text-blue-500 dark:text-blue-400 font-manrope text-sm font-medium tracking-wide border-b border-white/10 shadow-lg shadow-black/20 flex justify-between items-center w-full px-8 h-16 sticky top-0 z-40">
+<div class="flex items-center gap-4">
+<span class="text-xl font-bold text-slate-50 dark:text-white tracking-tighter">Sentinel Core</span>
+</div>
+<div class="flex items-center gap-6">
+<div class="relative hidden sm:block">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">search</span>
+<input class="bg-surface-variant border border-outline-variant rounded-full py-1.5 pl-9 pr-4 text-sm text-on-surface focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary w-64 placeholder-slate-500 font-body-md text-body-md" placeholder="Search systems..." type="text"/>
+</div>
+<div class="flex items-center gap-3">
+<button class="text-slate-400 hover:text-slate-200 hover:bg-white/5 transition-all duration-200 rounded-full p-2 flex items-center justify-center">
+<span class="material-symbols-outlined text-xl">notifications</span>
+</button>
+<button class="text-slate-400 hover:text-slate-200 hover:bg-white/5 transition-all duration-200 rounded-full p-2 flex items-center justify-center">
+<span class="material-symbols-outlined text-xl">history</span>
+</button>
+<button class="text-slate-400 hover:text-slate-200 hover:bg-white/5 transition-all duration-200 rounded-full p-2 flex items-center justify-center">
+<span class="material-symbols-outlined text-xl">help</span>
+</button>
+<div class="h-8 w-8 rounded-full bg-surface-variant overflow-hidden border border-outline-variant ml-2">
+<img alt="Commander Profile" class="w-full h-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBaMVxndMBPMC54iJT14YPkxEHYVMa-lXXhwgN5qmmJC6nw9O53tCk2lAjKrQZxfE6wfH-nxyT_P_AOOcCVYljWJymraYszy9CkXubpALngKR4DyNcUd9LF5Gtrt0iNsIi8FJuJVTS-QpjFnTHRveFL7zxKep_8EI8pcAG2AR3ah41drjI3jboeRKIZo0URqp3zp4Hz-2DhoGau4Yosq7bmzpFYyW7EIfaYqam_4jGcF2LXmHGoJOrEXUpS7JTW7qfFsmn_68vEWxas"/>
+</div>
+</div>
+</div>
+</header>
+<!-- Main Dashboard Canvas -->
+<main class="flex-1 p-8 overflow-y-auto">
+<div class="mb-10">
+<h2 class="font-h1 text-h1 text-on-surface">Service Map Overview</h2>
+<p class="font-body-md text-body-md text-on-surface-variant mt-1">Real-time status of interconnected core systems.</p>
+</div>
+<!-- 3 Column Layout with proper gap and alignment -->
+<div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+<!-- Column 1: Core Systems -->
+<div class="lg:col-span-3 flex flex-col gap-4">
+<h3 class="font-label-caps text-label-caps text-on-surface-variant uppercase tracking-widest pl-1">Core Systems</h3>
+<div class="bg-[#1E293B]/60 backdrop-blur-xl border border-white/10 rounded-xl overflow-hidden flex flex-col gap-2 p-3">
+<!-- System Items -->
+<div class="p-4 rounded-lg bg-white/5 flex items-center justify-between border border-transparent hover:border-white/10 transition-colors">
+<div class="flex items-center gap-3">
+<div class="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+<span class="material-symbols-outlined text-primary text-sm">database</span>
+</div>
+<span class="font-body-md text-body-md text-on-surface font-medium">Database</span>
+</div>
+<span class="font-caption text-caption text-primary bg-primary/10 px-2 py-0.5 rounded-full">Healthy</span>
+</div>
+<div class="p-4 rounded-lg bg-white/5 flex items-center justify-between border border-transparent hover:border-white/10 transition-colors">
+<div class="flex items-center gap-3">
+<div class="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+<span class="material-symbols-outlined text-primary text-sm">memory</span>
+</div>
+<span class="font-body-md text-body-md text-on-surface font-medium">Cache</span>
+</div>
+<span class="font-caption text-caption text-primary bg-primary/10 px-2 py-0.5 rounded-full">Healthy</span>
+</div>
+<div class="p-4 rounded-lg bg-white/5 flex items-center justify-between border border-transparent hover:border-white/10 transition-colors">
+<div class="flex items-center gap-3">
+<div class="w-8 h-8 rounded-full bg-tertiary/10 flex items-center justify-center">
+<span class="material-symbols-outlined text-tertiary text-sm">shield_person</span>
+</div>
+<span class="font-body-md text-body-md text-on-surface font-medium">Auth</span>
+</div>
+<span class="font-caption text-caption text-tertiary bg-tertiary/10 px-2 py-0.5 rounded-full border border-tertiary/20">Degraded</span>
+</div>
+<div class="p-4 rounded-lg bg-white/5 flex items-center justify-between border border-transparent hover:border-white/10 transition-colors">
+<div class="flex items-center gap-3">
+<div class="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+<span class="material-symbols-outlined text-primary text-sm">campaign</span>
+</div>
+<span class="font-body-md text-body-md text-on-surface font-medium">Notification</span>
+</div>
+<span class="font-caption text-caption text-primary bg-primary/10 px-2 py-0.5 rounded-full">Healthy</span>
+</div>
+<div class="p-4 rounded-lg bg-error/10 border border-error/20 flex items-center justify-between shadow-[0_0_15px_rgba(255,180,171,0.05)]">
+<div class="flex items-center gap-3">
+<div class="w-8 h-8 rounded-full bg-error/20 flex items-center justify-center">
+<span class="material-symbols-outlined text-error text-sm">payments</span>
+</div>
+<span class="font-body-md text-body-md text-error font-semibold">Payments</span>
+</div>
+<span class="font-caption text-caption text-error bg-error/20 px-2 py-0.5 rounded-full font-bold">Critical</span>
+</div>
+<div class="p-4 rounded-lg bg-white/5 flex items-center justify-between border border-transparent hover:border-white/10 transition-colors">
+<div class="flex items-center gap-3">
+<div class="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+<span class="material-symbols-outlined text-primary text-sm">shopping_cart_checkout</span>
+</div>
+<span class="font-body-md text-body-md text-on-surface font-medium">Checkout</span>
+</div>
+<span class="font-caption text-caption text-primary bg-primary/10 px-2 py-0.5 rounded-full">Healthy</span>
+</div>
+</div>
+</div>
+<!-- Column 2: Activity Log -->
+<div class="lg:col-span-5 flex flex-col gap-4">
+<h3 class="font-label-caps text-label-caps text-on-surface-variant uppercase tracking-widest pl-1">Activity Log</h3>
+<div class="bg-[#1E293B]/60 backdrop-blur-xl border border-white/10 rounded-xl overflow-hidden min-h-[400px] flex flex-col p-6">
+<div class="flex-1 overflow-y-auto space-y-8">
+<!-- Log Entry 1 -->
+<div class="relative pl-8 before:content-[''] before:absolute before:left-[11px] before:top-[28px] before:bottom-[-32px] before:w-[2px] before:bg-white/5 last:before:hidden">
+<div class="absolute left-0 top-1 w-6 h-6 rounded-full bg-surface-container flex items-center justify-center border border-error/30">
+<div class="w-2 h-2 rounded-full bg-error"></div>
+</div>
+<div class="flex flex-col gap-1">
+<div class="flex items-center justify-between">
+<span class="font-body-md text-body-md text-on-surface font-medium">Payment Gateway Timeout</span>
+<span class="font-caption text-caption text-on-surface-variant">Just now</span>
+</div>
+<p class="font-caption text-caption text-on-surface-variant leading-relaxed">Multiple timeout errors detected from primary payment processor API.</p>
+<div class="flex gap-2 mt-2">
+<span class="font-caption text-caption text-error bg-error/10 px-2 py-1 rounded">Action Required</span>
+</div>
+</div>
+</div>
+<!-- Log Entry 2 -->
+<div class="relative pl-8 before:content-[''] before:absolute before:left-[11px] before:top-[28px] before:bottom-[-32px] before:w-[2px] before:bg-white/5 last:before:hidden">
+<div class="absolute left-0 top-1 w-6 h-6 rounded-full bg-surface-container flex items-center justify-center border border-white/10">
+<div class="w-2 h-2 rounded-full bg-secondary"></div>
+</div>
+<div class="flex flex-col gap-1">
+<div class="flex items-center justify-between">
+<span class="font-body-md text-body-md text-on-surface font-medium">Auto-scaling Triggered</span>
+<span class="font-caption text-caption text-on-surface-variant">12 mins ago</span>
+</div>
+<p class="font-caption text-caption text-on-surface-variant leading-relaxed">Database cluster scaled up by 2 nodes to handle increased read load.</p>
+</div>
+</div>
+<!-- Log Entry 3 -->
+<div class="relative pl-8 before:content-[''] before:absolute before:left-[11px] before:top-[28px] before:bottom-[-32px] before:w-[2px] before:bg-white/5 last:before:hidden">
+<div class="absolute left-0 top-1 w-6 h-6 rounded-full bg-surface-container flex items-center justify-center border border-tertiary/30">
+<div class="w-2 h-2 rounded-full bg-tertiary"></div>
+</div>
+<div class="flex flex-col gap-1">
+<div class="flex items-center justify-between">
+<span class="font-body-md text-body-md text-on-surface font-medium">Auth Latency Spike</span>
+<span class="font-caption text-caption text-on-surface-variant">45 mins ago</span>
+</div>
+<p class="font-caption text-caption text-on-surface-variant leading-relaxed">Authentication requests experiencing &gt;500ms latency. Investigating token validation cache.</p>
+<div class="flex gap-2 mt-2">
+<span class="font-caption text-caption text-tertiary bg-tertiary/10 px-2 py-1 rounded">Investigating</span>
+</div>
+</div>
+</div>
+<!-- Log Entry 4 -->
+<div class="relative pl-8 before:content-[''] before:absolute before:left-[11px] before:top-[28px] before:bottom-[-32px] before:w-[2px] before:bg-white/5 last:before:hidden">
+<div class="absolute left-0 top-1 w-6 h-6 rounded-full bg-surface-container flex items-center justify-center border border-white/10">
+<div class="w-2 h-2 rounded-full bg-primary"></div>
+</div>
+<div class="flex flex-col gap-1">
+<div class="flex items-center justify-between">
+<span class="font-body-md text-body-md text-on-surface font-medium">System Backup Complete</span>
+<span class="font-caption text-caption text-on-surface-variant">2 hrs ago</span>
+</div>
+<p class="font-caption text-caption text-on-surface-variant leading-relaxed">Routine snapshot of all core databases completed successfully.</p>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Column 3: Performance -->
+<div class="lg:col-span-4 flex flex-col gap-4">
+<h3 class="font-label-caps text-label-caps text-on-surface-variant uppercase tracking-widest pl-1">Performance</h3>
+<!-- Reward Curve Chart Card -->
+<div class="bg-[#1E293B]/60 backdrop-blur-xl border border-white/10 rounded-xl p-6 mb-4">
+<div class="flex justify-between items-center mb-6">
+<h4 class="font-h2 text-body-lg text-on-surface">System Reward Curve</h4>
+<span class="material-symbols-outlined text-outline">show_chart</span>
+</div>
+<!-- Simulated Line Chart -->
+<div class="h-48 w-full relative flex items-end">
+<div class="absolute left-0 top-0 h-full flex flex-col justify-between text-caption text-outline-variant py-2">
+<span>100</span>
+<span>50</span>
+<span>0</span>
+</div>
+<div class="absolute left-8 right-0 top-0 h-full flex flex-col justify-between py-4">
+<div class="w-full h-[1px] bg-white/5"></div>
+<div class="w-full h-[1px] bg-white/5"></div>
+<div class="w-full h-[1px] bg-white/5"></div>
+</div>
+<div class="ml-8 w-full h-full relative overflow-hidden">
+<svg class="absolute w-full h-full" preserveaspectratio="none" viewbox="0 0 100 50">
+<defs>
+<lineargradient id="curveGradient" x1="0" x2="0" y1="0" y2="1">
+<stop offset="0%" stop-color="var(--tw-colors-primary)" stop-opacity="0.3"></stop>
+<stop offset="100%" stop-color="var(--tw-colors-primary)" stop-opacity="0"></stop>
+</lineargradient>
+</defs>
+<path d="M0,50 L0,30 Q10,35 20,25 T40,15 T60,20 T80,5 T100,10 L100,50 Z" fill="url(#curveGradient)"></path>
+<path d="M0,30 Q10,35 20,25 T40,15 T60,20 T80,5 T100,10" fill="none" stroke="var(--tw-colors-primary)" stroke-width="1.5"></path>
+</svg>
+<div class="absolute right-[0%] top-[20%] w-3 h-3 bg-background rounded-full border-2 border-primary shadow-[0_0_10px_rgba(173,198,255,0.5)]"></div>
+</div>
+</div>
+</div>
+<!-- Gauges Row -->
+<div class="grid grid-cols-2 gap-4">
+<!-- CPU Gauge -->
+<div class="bg-[#1E293B]/60 backdrop-blur-xl border border-white/10 rounded-xl p-5 flex flex-col items-center justify-center">
+<h4 class="font-label-caps text-label-caps text-on-surface-variant mb-4">Avg CPU Load</h4>
+<div class="relative w-24 h-24 flex items-center justify-center">
+<svg class="w-full h-full transform -rotate-90" viewbox="0 0 100 100">
+<circle cx="50" cy="50" fill="none" r="40" stroke="rgba(255,255,255,0.05)" stroke-dasharray="251.2" stroke-dashoffset="0" stroke-width="8"></circle>
+<circle cx="50" cy="50" fill="none" r="40" stroke="var(--tw-colors-tertiary)" stroke-dasharray="251.2" stroke-dashoffset="88" stroke-width="8"></circle>
+</svg>
+<div class="absolute flex flex-col items-center">
+<span class="font-display text-h2 text-on-surface">65%</span>
+</div>
+</div>
+</div>
+<!-- Uptime Gauge -->
+<div class="bg-[#1E293B]/60 backdrop-blur-xl border border-white/10 rounded-xl p-5 flex flex-col items-center justify-center">
+<h4 class="font-label-caps text-label-caps text-on-surface-variant mb-4">System Uptime</h4>
+<div class="relative w-24 h-24 flex items-center justify-center">
+<svg class="w-full h-full transform -rotate-90" viewbox="0 0 100 100">
+<circle cx="50" cy="50" fill="none" r="40" stroke="rgba(255,255,255,0.05)" stroke-dasharray="251.2" stroke-dashoffset="0" stroke-width="8"></circle>
+<circle cx="50" cy="50" fill="none" r="40" stroke="var(--tw-colors-primary)" stroke-dasharray="251.2" stroke-dashoffset="5" stroke-width="8"></circle>
+</svg>
+<div class="absolute flex flex-col items-center">
+<span class="font-display text-h2 text-on-surface">99.9%</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+</div>
+</body></html>

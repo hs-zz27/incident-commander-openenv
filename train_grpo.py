@@ -116,7 +116,12 @@ def build_obs_prompt(obs_dict: Dict, step: int, action_history: List[str]) -> st
         lines.append("Previous actions: " + ", ".join(action_history))
 
     lines.append("")
-    lines.append('Respond with a JSON action: {"action_type": "...", "service_name": "..."}')
+    lines.append("Valid action_type values: inspect_logs, inspect_metrics, restart_service, scale_service, rollback, clear_cache, escalate, do_nothing")
+    svc_names = sorted(obs_dict.get("services", {}).keys())
+    if svc_names:
+        lines.append(f"Valid service_name values: {', '.join(svc_names)}")
+    lines.append("")
+    lines.append('Respond with ONLY a JSON object, nothing else: {"action_type": "<valid_action>", "service_name": "<valid_service>"}')
 
     return "\n".join(lines)
 
@@ -585,11 +590,13 @@ def load_model_and_tokenizer(model_name, use_lora, use_4bit, gradient_checkpoint
 
     # Precision: bf16 if supported, else fp16
     if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
-        model_kwargs["torch_dtype"] = torch.bfloat16
+        compute_dtype = torch.bfloat16
         print("  Precision: bfloat16")
     else:
-        model_kwargs["torch_dtype"] = torch.float16
+        compute_dtype = torch.float16
         print("  Precision: float16")
+    # Use 'dtype' (new) with fallback to 'torch_dtype' (deprecated)
+    model_kwargs["torch_dtype"] = compute_dtype
 
     # 4-bit quantization via bitsandbytes
     if use_4bit:
@@ -598,7 +605,7 @@ def load_model_and_tokenizer(model_name, use_lora, use_4bit, gradient_checkpoint
             model_kwargs["quantization_config"] = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=model_kwargs["torch_dtype"],
+                bnb_4bit_compute_dtype=compute_dtype,
                 bnb_4bit_use_double_quant=True,
             )
             print("  Quantization: 4-bit NF4")
@@ -894,7 +901,7 @@ def main():
 
     # --- Step 3: Configure GRPO ---
     use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
-    config = GRPOConfig(
+    grpo_kwargs = dict(
         output_dir=args.output_dir,
         num_train_epochs=1,
         max_steps=args.steps,
@@ -906,10 +913,14 @@ def main():
         bf16=use_bf16,
         fp16=not use_bf16,
         num_generations=args.num_generations,
-        max_completion_length=256,
         log_level="info",
         report_to="none",
     )
+    # max_completion_length may not exist in all TRL versions
+    try:
+        config = GRPOConfig(max_completion_length=256, **grpo_kwargs)
+    except TypeError:
+        config = GRPOConfig(**grpo_kwargs)
 
     # --- Step 4: Instantiate GRPOTrainer ---
     print(f"\nInitializing GRPOTrainer...")
@@ -918,12 +929,19 @@ def main():
         "reward_funcs": [incident_reward_func],
         "args": config,
         "train_dataset": dataset,
-        "processing_class": tokenizer,
     }
-    if peft_config is not None:
-        trainer_kwargs["peft_config"] = peft_config
-
-    trainer = GRPOTrainer(**trainer_kwargs)
+    # TRL >= 0.16 uses 'processing_class', older uses 'tokenizer'
+    try:
+        trainer_kwargs["processing_class"] = tokenizer
+        if peft_config is not None:
+            trainer_kwargs["peft_config"] = peft_config
+        trainer = GRPOTrainer(**trainer_kwargs)
+    except TypeError:
+        del trainer_kwargs["processing_class"]
+        trainer_kwargs["tokenizer"] = tokenizer
+        if peft_config is not None:
+            trainer_kwargs["peft_config"] = peft_config
+        trainer = GRPOTrainer(**trainer_kwargs)
 
     # --- Step 5: Train ---
     print(f"\n{'='*60}")

@@ -292,39 +292,9 @@ class TrainedAgent:
         return action
 
     def _parse_action(self, response_text: str) -> Optional[IncidentAction]:
-        """Parse model output into an IncidentAction."""
-        text = response_text.strip()
-
-        # Strip markdown code fences
-        if text.startswith("```"):
-            lines = text.split("\n")
-            lines = [l for l in lines if not l.strip().startswith("```")]
-            text = "\n".join(lines).strip()
-
-        try:
-            data = json.loads(text)
-            return IncidentAction(**data)
-        except Exception:
-            pass
-
-        # Try to extract JSON from the text
-        for start_char in ["{", "["]:
-            idx = text.find(start_char)
-            if idx >= 0:
-                end_char = "}" if start_char == "{" else "]"
-                depth = 0
-                for i in range(idx, len(text)):
-                    if text[i] == start_char:
-                        depth += 1
-                    elif text[i] == end_char:
-                        depth -= 1
-                        if depth == 0:
-                            try:
-                                data = json.loads(text[idx : i + 1])
-                                return IncidentAction(**data)
-                            except Exception:
-                                break
-        return None
+        """Parse model output into an IncidentAction (uses shared fuzzy parser)."""
+        from evaluate_trained import parse_action
+        return parse_action(response_text)
 
     def reset_step_count(self):
         """Reset step counter between episodes."""

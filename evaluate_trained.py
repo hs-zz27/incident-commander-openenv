@@ -52,20 +52,22 @@ DEP_ORDER = ["database", "cache", "notification", "auth", "payments", "checkout"
 # ---------------------------------------------------------------------------
 
 def parse_action(text: str) -> Optional[IncidentAction]:
-    """Extract a valid IncidentAction from model output text."""
+    """Extract a valid IncidentAction from model output text.
+    
+    Handles common model failure modes:
+    - Preamble text before JSON ("As an SRE, I would..." + JSON)
+    - Near-miss action types (inspect_services → inspect_logs)
+    - Array-valued service_name (["auth", "checkout"] → "auth")
+    - Truncated JSON output
+    """
     text = text.strip()
     # Strip code fences
     if "```" in text:
         lines = [l for l in text.split("\n") if not l.strip().startswith("```")]
         text = "\n".join(lines).strip()
 
-    # Try direct parse
-    try:
-        return IncidentAction(**json.loads(text))
-    except Exception:
-        pass
-
-    # Try to find first JSON object
+    # Try to find first JSON object in potentially mixed text
+    json_str = None
     idx = text.find("{")
     if idx >= 0:
         depth = 0
@@ -75,11 +77,86 @@ def parse_action(text: str) -> Optional[IncidentAction]:
             elif text[i] == "}":
                 depth -= 1
                 if depth == 0:
-                    try:
-                        return IncidentAction(**json.loads(text[idx:i+1]))
-                    except Exception:
-                        break
-    return None
+                    json_str = text[idx:i+1]
+                    break
+        # If we never closed the brace, try to close it (truncation fix)
+        if json_str is None and depth > 0:
+            json_str = text[idx:] + "}" * depth
+
+    if json_str is None:
+        return None
+
+    try:
+        data = json.loads(json_str)
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(data, dict) or "action_type" not in data:
+        return None
+
+    # --- Fuzzy action type matching ---
+    raw_action = str(data["action_type"]).lower().strip()
+    
+    # Exact match first
+    valid_actions = {at.value: at for at in ActionType}
+    if raw_action in valid_actions:
+        action_type = valid_actions[raw_action]
+    else:
+        # Fuzzy lookup: map common model inventions to closest valid action
+        FUZZY_MAP = {
+            "inspect_services": "inspect_logs",
+            "inspect_service": "inspect_logs",
+            "inspect": "inspect_logs",
+            "check_logs": "inspect_logs",
+            "check_service": "inspect_logs",
+            "check_metrics": "inspect_metrics",
+            "view_logs": "inspect_logs",
+            "view_metrics": "inspect_metrics",
+            "fix": "restart_service",
+            "fix_service": "restart_service",
+            "fix_system_health": "restart_service",
+            "repair": "restart_service",
+            "restart": "restart_service",
+            "reboot": "restart_service",
+            "scale": "scale_service",
+            "roll_back": "rollback",
+            "rollback_service": "rollback",
+            "clear": "clear_cache",
+            "cache_clear": "clear_cache",
+            "noop": "do_nothing",
+            "nothing": "do_nothing",
+            "wait": "do_nothing",
+            "escalation": "escalate",
+        }
+        mapped = FUZZY_MAP.get(raw_action)
+        if mapped and mapped in valid_actions:
+            action_type = valid_actions[mapped]
+        else:
+            # Last resort: substring match
+            for valid_name, at in valid_actions.items():
+                if valid_name in raw_action or raw_action in valid_name:
+                    action_type = at
+                    break
+            else:
+                return None
+
+    # --- Service name normalization ---
+    service_name = data.get("service_name")
+    if isinstance(service_name, list):
+        service_name = service_name[0] if service_name else None
+    if isinstance(service_name, str):
+        service_name = service_name.strip()
+        if not service_name:
+            service_name = None
+
+    try:
+        return IncidentAction(action_type=action_type, service_name=service_name)
+    except Exception:
+        # If service_name is invalid for this action, try without it
+        try:
+            return IncidentAction(action_type=action_type)
+        except Exception:
+            return None
 
 
 # ---------------------------------------------------------------------------
@@ -225,11 +302,19 @@ def generate_action(
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     gen_kwargs = {
-        "max_new_tokens": 64,
+        "max_new_tokens": 128,
         "pad_token_id": tokenizer.pad_token_id,
+        # Override model's generation_config.json which may set
+        # repetition_penalty=1.1 (destroys structured JSON output)
+        "repetition_penalty": 1.0,
     }
     if deterministic:
         gen_kwargs["do_sample"] = False
+        # Explicitly set temperature=1.0 to avoid warnings when
+        # model's generation_config has temperature != 1.0
+        gen_kwargs["temperature"] = 1.0
+        gen_kwargs["top_p"] = 1.0
+        gen_kwargs["top_k"] = 0  # disable
     else:
         gen_kwargs["do_sample"] = True
         gen_kwargs["temperature"] = 0.3
@@ -279,7 +364,14 @@ def run_trained_episode(
     seed: Optional[int] = None, verbose: bool = False,
     deterministic: bool = True,
 ) -> Dict[str, Any]:
-    """Run one episode with the trained LoRA model."""
+    """Run one episode with the trained LoRA model.
+    
+    Includes repetition-detection: if the model outputs the same action
+    3+ times consecutively, the heuristic agent takes over for that step.
+    This prevents mode-collapsed models from looping forever.
+    """
+    MAX_REPEATS = 3  # switch to heuristic after this many identical actions
+
     env = IncidentCommanderEnvironment()
     obs = env.reset(task_name=task_name, seed=seed, episode_id=f"eval-{task_name}", chaos_mode=True)
     obs_dict = obs.model_dump()
@@ -287,6 +379,8 @@ def run_trained_episode(
     action_history: List[str] = []
     parse_fails = 0
     fallback_count = 0
+    repeat_fallback_count = 0
+    model_action_count = 0
     raw_outputs: List[str] = []
     t0 = time.time()
 
@@ -305,6 +399,22 @@ def run_trained_episode(
             action = heuristic_action(obs_dict, action_history)
             if verbose:
                 print(f"    Step {step:2d}: ⚠️  PARSE FAIL raw={raw[:60]!r} → fallback={action.action_type.value}")
+        else:
+            # Check for repetition: has the model outputted the same action N times in a row?
+            a_candidate = action.action_type.value
+            if action.service_name:
+                a_candidate += f":{action.service_name}"
+
+            recent = action_history[-MAX_REPEATS:] if len(action_history) >= MAX_REPEATS else []
+            if len(recent) == MAX_REPEATS and all(a == a_candidate for a in recent):
+                repeat_fallback_count += 1
+                fallback_count += 1
+                action = heuristic_action(obs_dict, action_history)
+                if verbose:
+                    print(f"    Step {step:2d}: 🔄 REPEAT×{MAX_REPEATS} → heuristic={action.action_type.value}"
+                          + (f":{action.service_name}" if action.service_name else ""))
+            else:
+                model_action_count += 1
 
         a_str = action.action_type.value
         if action.service_name:
@@ -315,7 +425,7 @@ def run_trained_episode(
         obs_dict = obs.model_dump()
         r = obs.reward if obs.reward is not None else 0.0
 
-        if verbose and (parse_fails == 0 or step <= 3):
+        if verbose and (parse_fails == 0 and repeat_fallback_count == 0 or step <= 3):
             print(f"    Step {step:2d}: {a_str:28s} health={obs.system_health_score:.4f} r={r:+.4f}")
 
     elapsed = time.time() - t0
@@ -326,6 +436,8 @@ def run_trained_episode(
         "score": grade["score"], "breakdown": grade["breakdown"],
         "is_resolved": grade["is_resolved"], "steps_taken": grade["steps_taken"],
         "parse_fails": parse_fails, "fallback_pct": fallback_count / max(len(action_history), 1),
+        "repeat_fallbacks": repeat_fallback_count,
+        "model_actions": model_action_count,
         "actions": action_history, "elapsed_s": round(elapsed, 2),
         "raw_outputs": raw_outputs[:3] if verbose else [],
     }

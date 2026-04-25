@@ -56,4 +56,9 @@ sft_warmstart_adapter/
 sft_merged_model/
 
 meow.txt
-.pytest_cache/
+trained_model_v2/
+sft_merged_model_final/
+sft_warmstart_adapter_final/
+evaluation_results.json
+training_log.json
+sft_dataset.json
