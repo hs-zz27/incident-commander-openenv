@@ -526,12 +526,18 @@ Examples:
         "model": model,
         "args": sft_config,
         "train_dataset": dataset,
-        "processing_class": tokenizer,
     }
     if peft_config is not None:
         trainer_kwargs["peft_config"] = peft_config
 
-    trainer = SFTTrainer(**trainer_kwargs)
+    # TRL >= 0.16 uses 'processing_class', older uses 'tokenizer'
+    try:
+        trainer_kwargs["processing_class"] = tokenizer
+        trainer = SFTTrainer(**trainer_kwargs)
+    except TypeError:
+        del trainer_kwargs["processing_class"]
+        trainer_kwargs["tokenizer"] = tokenizer
+        trainer = SFTTrainer(**trainer_kwargs)
 
     total_train_samples = len(dataset) * args.epochs
     effective_batch = args.batch_size * sft_config.gradient_accumulation_steps
