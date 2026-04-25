@@ -202,10 +202,15 @@ def should_override_model_action(
     if _is_repeating(action_history, candidate, repeat_n=repeat_n):
         return True, f"repeat×{repeat_n}"
 
-    # Diagnostics guard: don't allow early recovery actions before inspecting the inferred root cause.
+    # Diagnostics guard: force inspecting the inferred root cause in early steps.
+    # Block ALL actions (including diagnostics on other services) until root cause is inspected.
     inferred_root = _infer_root_cause(services)
     if step <= 3 and inferred_root and inferred_root not in inspected:
-        if model_action.action_type not in (ActionType.INSPECT_LOGS, ActionType.INSPECT_METRICS):
+        is_inspecting_root = (
+            model_action.action_type in (ActionType.INSPECT_LOGS, ActionType.INSPECT_METRICS)
+            and model_action.service_name == inferred_root
+        )
+        if not is_inspecting_root:
             return True, "early_recovery_before_root_inspect"
 
     # Hard pattern guardrail: version mismatch must be rollback, not restart.
