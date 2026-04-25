@@ -464,9 +464,10 @@ def create_incident_app() -> FastAPI:
             outputs = model.generate(
                 **inputs,
                 max_new_tokens=64,
-                temperature=0.1,
+                temperature=0.3,
                 do_sample=True,
                 top_p=0.9,
+                repetition_penalty=1.1,
                 pad_token_id=tokenizer.pad_token_id,
             )
 

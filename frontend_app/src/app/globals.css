@@ -139,6 +139,30 @@ body {
     box-shadow: 0 0 20px -5px rgba(250, 204, 21, 0.2); 
 }
 
+/* ── Activity Log real-time entry animation ─────────────────────────────────── */
+@keyframes logEntrySlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes logEntryGlowPulse {
+  0%, 100% { box-shadow: 0 0 0px 0px rgba(77, 142, 255, 0); }
+  50%       { box-shadow: 0 0 12px 2px rgba(77, 142, 255, 0.18); }
+}
+
+.activity-log-enter {
+  animation:
+    logEntrySlideIn 0.35s cubic-bezier(0.22, 1, 0.36, 1) both,
+    logEntryGlowPulse 1.2s ease-in-out 0.35s 2;
+  animation-delay: var(--delay, 0ms), calc(var(--delay, 0ms) + 0.35s);
+}
+
 .responsive-dashboard-grid {
     display: grid;
     grid-template-columns: repeat(12, 1fr);

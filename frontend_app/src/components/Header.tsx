@@ -1,4 +1,10 @@
-export default function Header({ onToggleSidebar }: { onToggleSidebar: () => void }) {
+interface HeaderProps {
+  onToggleSidebar: () => void;
+  isConnected?: boolean;
+  taskName?: string;
+}
+
+export default function Header({ onToggleSidebar, isConnected = false, taskName }: HeaderProps) {
   return (
     <header className="bg-surface/80 backdrop-blur-md text-on-surface-variant font-manrope text-[12px] font-medium tracking-tight top-0 z-50 border-b border-outline-variant/10 flex justify-between items-center w-full px-6 h-14 sticky">
       <div className="flex items-center gap-4">
@@ -9,7 +15,15 @@ export default function Header({ onToggleSidebar }: { onToggleSidebar: () => voi
         >
           <span className="material-symbols-outlined text-xl">menu</span>
         </button>
-        <span className="text-sm font-semibold text-on-surface tracking-tight">Incident Commander</span>
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-on-surface tracking-tight">Incident Commander</span>
+          {taskName && (
+            <span className="text-xs font-mono bg-surface-container-high text-primary px-2 py-0.5 rounded border border-primary/20">
+              {taskName}
+            </span>
+          )}
+          <div title={isConnected ? "Connected to Backend" : "Disconnected"} className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 shadow-[0_0_5px_rgba(34,197,94,0.5)]' : 'bg-red-500'}`}></div>
+        </div>
       </div>
       
       <div className="flex items-center gap-4">
