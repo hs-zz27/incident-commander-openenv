@@ -241,7 +241,13 @@ class IncidentCommanderRewardFunction:
     Returns EPISODE-LEVEL score, not per-step reward (Audit Fix #4).
     """
 
-    TASKS = ["single_service_failure", "cascading_failure", "hidden_root_cause"]
+    TASKS = [
+        "single_service_failure",
+        "cascading_failure",
+        "hidden_root_cause",
+        "chaos_cascade",
+        "multi_root_cause",
+    ]
 
     def __init__(self):
         self._current_task_idx = 0

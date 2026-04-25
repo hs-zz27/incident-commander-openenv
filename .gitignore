@@ -4,10 +4,9 @@ __pycache__/
 *$py.class
 
 # Virtual environments
-.venv/
+.venv*/
 venv/
 env/
-.venv310/
 
 # Distribution
 dist/
@@ -47,3 +46,5 @@ checkpoint-*/
 !hf_blog_draft.md
 
 Decisions_.md
+trained_model_full_0p5b
+trained_model_grpo_0.5b

@@ -41,6 +41,12 @@ from server.environment import IncidentCommanderEnvironment
 from server.models import IncidentAction, ActionType
 from server.tasks import list_tasks
 
+# Import training prompt builder for --local mode (must match training distribution)
+try:
+    from train_grpo import build_obs_prompt as _training_prompt_builder
+except ImportError:
+    _training_prompt_builder = None
+
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -313,11 +319,123 @@ def fallback_action(
 
 
 # ---------------------------------------------------------------------------
-# Run a single task
+# Local model loader (for --local mode)
 # ---------------------------------------------------------------------------
 
-def run_task(task_name: str, client: OpenAI) -> None:
+_local_model = None
+_local_tokenizer = None
+
+
+def load_local_model(base_model: str, adapter_path: str, device: str):
+    """Load base model + LoRA adapter for local inference."""
+    global _local_model, _local_tokenizer
+
+    if _local_model is not None:
+        return _local_model, _local_tokenizer
+
+    try:
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from peft import PeftModel
+    except ImportError as e:
+        print(f"ERROR: Missing dependency for --local mode: {e}", file=sys.stderr)
+        print("Install: pip install transformers peft torch accelerate", file=sys.stderr)
+        sys.exit(1)
+
+    from pathlib import Path
+    adapter_dir = Path(adapter_path)
+    if not adapter_dir.exists():
+        print(f"\n❌ Adapter not found at '{adapter_path}'", file=sys.stderr)
+        print(f"   Get trained_model_full_0p5b/ from your teammate.", file=sys.stderr)
+        sys.exit(1)
+
+    # Auto-detect device
+    if device == "auto":
+        if torch.cuda.is_available():
+            device = "cuda"
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            device = "mps"
+        else:
+            device = "cpu"
+
+    print(f"\n  Loading trained model on {device}...")
+
+    # Precision
+    dtype = torch.float32
+    if device == "mps":
+        dtype = torch.float16
+    elif device == "cuda":
+        dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+
+    _local_tokenizer = AutoTokenizer.from_pretrained(base_model)
+    if _local_tokenizer.pad_token is None:
+        _local_tokenizer.pad_token = _local_tokenizer.eos_token
+
+    base = AutoModelForCausalLM.from_pretrained(
+        base_model, torch_dtype=dtype,
+        device_map=device if device != "mps" else None,
+    )
+    if device == "mps":
+        base = base.to("mps")
+
+    _local_model = PeftModel.from_pretrained(base, adapter_path)
+    _local_model.eval()
+
+    param_count = sum(p.numel() for p in _local_model.parameters())
+    print(f"  ✅ Model loaded: {param_count:,} params on {device}")
+
+    return _local_model, _local_tokenizer
+
+
+def generate_local_action(
+    model, tokenizer,
+    obs_dict, step, action_history,
+) -> str:
+    """
+    Generate action using the trained model with TRAINING-ALIGNED prompts.
+
+    Uses build_obs_prompt (user-role only, no system prompt) to match
+    the exact distribution the model was trained on.
+    """
+    import torch
+
+    if _training_prompt_builder is None:
+        raise RuntimeError("Cannot import train_grpo.build_obs_prompt for local inference")
+
+    prompt_text = _training_prompt_builder(obs_dict, step, action_history)
+    messages = [{"role": "user", "content": prompt_text}]
+
+    if hasattr(tokenizer, "apply_chat_template"):
+        input_text = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+    else:
+        input_text = prompt_text
+
+    inputs = tokenizer(input_text, return_tensors="pt", truncation=True, max_length=2048)
+    inputs = {k: v.to(model.device) for k, v in inputs.items()}
+
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=64,
+            temperature=0.1,
+            do_sample=True,
+            top_p=0.9,
+            pad_token_id=tokenizer.pad_token_id,
+        )
+
+    generated = outputs[0][inputs["input_ids"].shape[1]:]
+    return tokenizer.decode(generated, skip_special_tokens=True).strip()
+
+
+# ---------------------------------------------------------------------------
+# Run a single task (updated for --local support)
+# ---------------------------------------------------------------------------
+
+def run_task(task_name: str, client=None, local_model=None, local_tokenizer=None) -> None:
     """Run a single task episode and print results in exact format."""
+    use_local = local_model is not None
     env = IncidentCommanderEnvironment()
     rewards: List[float] = []
     success = False
@@ -325,7 +443,8 @@ def run_task(task_name: str, client: OpenAI) -> None:
     steps = 0
     action_history: List[str] = []
 
-    print(f"[START] task={task_name} env={BENCHMARK_NAME} model={MODEL_NAME}", flush=True)
+    mode_str = "local" if use_local else MODEL_NAME
+    print(f"[START] task={task_name} env={BENCHMARK_NAME} model={mode_str}", flush=True)
 
     try:
         obs = env.reset(task_name=task_name)
@@ -334,30 +453,47 @@ def run_task(task_name: str, client: OpenAI) -> None:
 
         while not obs.done:
             steps += 1
-            prompt = observation_to_prompt(obs_dict, steps, action_history)
-            messages.append({"role": "user", "content": prompt})
 
-            # Call LLM
             action = None
-            for attempt in range(MAX_RETRIES):
-                try:
-                    completion = client.chat.completions.create(
-                        model=MODEL_NAME,
-                        messages=messages,
-                        temperature=0.0,
-                        max_tokens=256,
-                    )
-                    response_text = completion.choices[0].message.content or ""
-                    action = parse_action(response_text)
-                    if action:
-                        messages.append({"role": "assistant", "content": response_text})
-                        break
-                except Exception as e:
-                    if attempt == MAX_RETRIES - 1:
-                        print(
-                            f"WARNING: LLM failed after {MAX_RETRIES} retries: {e}",
-                            file=sys.stderr,
+
+            if use_local:
+                # Local model path — uses training-aligned prompts
+                for attempt in range(MAX_RETRIES):
+                    try:
+                        response_text = generate_local_action(
+                            local_model, local_tokenizer,
+                            obs_dict, steps, action_history,
                         )
+                        action = parse_action(response_text)
+                        if action:
+                            break
+                    except Exception as e:
+                        if attempt == MAX_RETRIES - 1:
+                            print(f"WARNING: Local model failed: {e}", file=sys.stderr)
+            else:
+                # API path — uses OpenAI client with SYSTEM_PROMPT
+                prompt = observation_to_prompt(obs_dict, steps, action_history)
+                messages.append({"role": "user", "content": prompt})
+
+                for attempt in range(MAX_RETRIES):
+                    try:
+                        completion = client.chat.completions.create(
+                            model=MODEL_NAME,
+                            messages=messages,
+                            temperature=0.0,
+                            max_tokens=256,
+                        )
+                        response_text = completion.choices[0].message.content or ""
+                        action = parse_action(response_text)
+                        if action:
+                            messages.append({"role": "assistant", "content": response_text})
+                            break
+                    except Exception as e:
+                        if attempt == MAX_RETRIES - 1:
+                            print(
+                                f"WARNING: LLM failed after {MAX_RETRIES} retries: {e}",
+                                file=sys.stderr,
+                            )
 
             if action is None:
                 action = fallback_action(obs_dict, steps, action_history)
@@ -383,8 +519,8 @@ def run_task(task_name: str, client: OpenAI) -> None:
                 flush=True,
             )
 
-            # Keep conversation history manageable (sliding window)
-            if len(messages) > 20:
+            # Keep conversation history manageable (API mode only)
+            if not use_local and len(messages) > 20:
                 messages = messages[:1] + messages[-18:]
 
         # Final grading
@@ -419,15 +555,45 @@ def run_task(task_name: str, client: OpenAI) -> None:
 
 def main():
     """Run inference across all three tasks."""
-    if not API_KEY:
-        print("WARNING: No HF_TOKEN or API_KEY set.", file=sys.stderr)
+    import argparse
 
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    parser = argparse.ArgumentParser(description="Incident Commander Inference")
+    parser.add_argument("--local", action="store_true",
+                        help="Use local trained model instead of API")
+    parser.add_argument("--base-model", type=str, default="Qwen/Qwen2.5-0.5B-Instruct",
+                        help="Base model for --local mode")
+    parser.add_argument("--adapter", type=str, default="trained_model_full_0p5b",
+                        help="LoRA adapter path for --local mode")
+    parser.add_argument("--device", type=str, default="auto",
+                        choices=["auto", "cpu", "cuda", "mps"],
+                        help="Device for --local mode (default: auto-detect)")
+    parser.add_argument("--task", type=str, default=None,
+                        help="Run a specific task (default: all)")
+    args = parser.parse_args()
 
-    tasks = list_tasks()
+    local_model = None
+    local_tokenizer = None
+    client = None
+
+    if args.local:
+        local_model, local_tokenizer = load_local_model(
+            args.base_model, args.adapter, args.device
+        )
+    else:
+        if not API_KEY:
+            print("WARNING: No HF_TOKEN or API_KEY set.", file=sys.stderr)
+        client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+
+    tasks = [args.task] if args.task else list_tasks()
     for task_name in tasks:
-        run_task(task_name, client)
+        run_task(
+            task_name,
+            client=client,
+            local_model=local_model,
+            local_tokenizer=local_tokenizer,
+        )
 
 
 if __name__ == "__main__":
     main()
+

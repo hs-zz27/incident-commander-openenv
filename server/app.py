@@ -334,6 +334,181 @@ def create_incident_app() -> FastAPI:
             "state": IncidentState.model_json_schema(),
         }
 
+    # ---- Trained Model Predict Endpoint ----
+    # Lazy-loaded model state
+    _model_state = {"model": None, "tokenizer": None, "loaded": False, "error": None}
+
+    class PredictRequest(BaseModel):
+        base_model: str = Field(default="Qwen/Qwen2.5-0.5B-Instruct", description="Base model name")
+        adapter_path: str = Field(default="trained_model_full_0p5b", description="LoRA adapter path")
+        device: str = Field(default="auto", description="Device: auto, cpu, cuda, mps")
+
+    @app.post("/predict")
+    async def predict(request: PredictRequest = None):
+        """
+        Generate the next action from the trained LoRA policy.
+
+        Uses the current environment state and the EXACT training prompt format
+        (build_obs_prompt from train_grpo.py) for distribution-matched inference.
+
+        The model is lazy-loaded on first call to avoid slowing down server startup.
+        """
+        import os, sys
+        req = request or PredictRequest()
+
+        # Lazy-load model
+        if not _model_state["loaded"]:
+            try:
+                import torch
+                from transformers import AutoModelForCausalLM, AutoTokenizer
+                from peft import PeftModel
+
+                device = req.device
+                if device == "auto":
+                    if torch.cuda.is_available():
+                        device = "cuda"
+                    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                        device = "mps"
+                    else:
+                        device = "cpu"
+
+                from pathlib import Path
+                adapter_dir = Path(req.adapter_path)
+                if not adapter_dir.exists():
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Adapter not found at '{req.adapter_path}'. "
+                               f"Get trained_model_full_0p5b/ from your teammate.",
+                    )
+
+                dtype = torch.float32
+                if device == "mps":
+                    dtype = torch.float16
+                elif device == "cuda":
+                    dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+
+                tokenizer = AutoTokenizer.from_pretrained(req.base_model)
+                if tokenizer.pad_token is None:
+                    tokenizer.pad_token = tokenizer.eos_token
+
+                base = AutoModelForCausalLM.from_pretrained(
+                    req.base_model, torch_dtype=dtype,
+                    device_map=device if device != "mps" else None,
+                )
+                if device == "mps":
+                    base = base.to("mps")
+
+                model = PeftModel.from_pretrained(base, req.adapter_path)
+                model.eval()
+
+                _model_state["model"] = model
+                _model_state["tokenizer"] = tokenizer
+                _model_state["loaded"] = True
+                logger.info(f"Trained model loaded on {device}")
+
+            except HTTPException:
+                raise
+            except Exception as e:
+                _model_state["error"] = str(e)
+                raise HTTPException(status_code=500, detail=f"Model loading failed: {e}")
+
+        model = _model_state["model"]
+        tokenizer = _model_state["tokenizer"]
+
+        if model is None:
+            raise HTTPException(status_code=500, detail="Model not loaded")
+
+        # Build prompt from current env state using EXACT training format
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            from train_grpo import build_obs_prompt
+        except ImportError:
+            raise HTTPException(
+                status_code=500,
+                detail="Cannot import train_grpo.build_obs_prompt — needed for prompt alignment",
+            )
+
+        import torch
+
+        state = env.state
+        obs_dict = {
+            "services": {k: v.model_dump() for k, v in state.services.items()},
+            "system_health_score": sum(
+                1 for s in state.services.values()
+                if s.status.value == "healthy"
+            ) / max(len(state.services), 1),
+            "max_steps": 30,
+            "incident_severity": "unknown",
+            "alerts": [],
+            "logs": [],
+            "escalation_tier": 1,
+            "services_at_risk": [],
+            "runbook_memory": [],
+            "metadata": {},
+        }
+
+        prompt_text = build_obs_prompt(obs_dict, state.step_count + 1, state.actions_taken)
+        messages = [{"role": "user", "content": prompt_text}]
+
+        if hasattr(tokenizer, "apply_chat_template"):
+            input_text = tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+        else:
+            input_text = prompt_text
+
+        inputs = tokenizer(input_text, return_tensors="pt", truncation=True, max_length=2048)
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=64,
+                temperature=0.1,
+                do_sample=True,
+                top_p=0.9,
+                pad_token_id=tokenizer.pad_token_id,
+            )
+
+        generated = outputs[0][inputs["input_ids"].shape[1]:]
+        response = tokenizer.decode(generated, skip_special_tokens=True).strip()
+
+        # Parse JSON action
+        import json as json_mod
+        action_data = None
+        try:
+            action_data = json_mod.loads(response)
+        except Exception:
+            # Try to extract JSON from response
+            idx = response.find("{")
+            if idx >= 0:
+                end = response.rfind("}")
+                if end > idx:
+                    try:
+                        action_data = json_mod.loads(response[idx:end+1])
+                    except Exception:
+                        pass
+
+        return {
+            "raw_response": response,
+            "parsed_action": action_data,
+            "step": state.step_count + 1,
+            "model_device": str(next(model.parameters()).device),
+        }
+
+    @app.get("/model/info")
+    async def model_info():
+        """Return trained model status and metadata."""
+        info = {
+            "loaded": _model_state["loaded"],
+            "error": _model_state["error"],
+        }
+        if _model_state["model"] is not None:
+            model = _model_state["model"]
+            info["device"] = str(next(model.parameters()).device)
+            info["param_count"] = sum(p.numel() for p in model.parameters())
+        return info
+
     return app
 
 
