@@ -16,3 +16,5 @@ project_memory.md
 .DS_Store
 .env
 .env.local
+
+meow.txt
