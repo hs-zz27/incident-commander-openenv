@@ -35,13 +35,21 @@ function statusStyle(status: string) {
         text:  'text-error font-semibold',
         label: 'Critical',
       };
+    case 'pending':
+      return {
+        badge: 'text-outline bg-white/10',
+        icon:  'bg-white/5 text-outline',
+        row:   'bg-white/5 border-transparent',
+        text:  'text-on-surface-variant',
+        label: 'Idle',
+      };
     default:
       return {
         badge: 'text-outline bg-white/10',
         icon:  'bg-white/5 text-outline',
         row:   'bg-white/5 border-transparent',
         text:  'text-on-surface-variant',
-        label: 'Unknown',
+        label: 'Other',
       };
   }
 }
@@ -68,7 +76,7 @@ export default function ServiceMap({ services, isInitializing }: ServiceMapProps
           serviceNames.map((name) => {
           const svc = services[name];
           const meta = SERVICE_META[name];
-          const style = statusStyle(svc?.status || 'unknown');
+          const style = statusStyle(svc?.status ?? 'pending');
 
           return (
             <div

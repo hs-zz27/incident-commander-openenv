@@ -136,7 +136,7 @@ def observation_to_prompt(
     lines.append("### Services")
     services = obs_dict.get("services", {})
     for name, svc in sorted(services.items()):
-        status = svc.get("status", "unknown")
+        status = svc.get("status", "healthy")
         err = svc.get("error_rate", 0)
         lat = svc.get("latency_ms", 0)
         ver = svc.get("version", "?")

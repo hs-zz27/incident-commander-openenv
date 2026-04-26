@@ -315,7 +315,7 @@ def observation_to_prompt(
 
     lines.append("### Services")
     for name, svc in sorted(show_services.items()):
-        status = svc.get("status", "unknown")
+        status = svc.get("status", "healthy")
         err = svc.get("error_rate", 0)
         lat = svc.get("latency_ms", 0)
         ver = svc.get("version", "?")

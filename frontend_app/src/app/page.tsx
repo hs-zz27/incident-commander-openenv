@@ -1,13 +1,16 @@
 "use client";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Sidebar from "@/components/Sidebar";
 import Header from "@/components/Header";
 import ServiceMap from "@/components/ServiceMap";
 import ActivityLog from "@/components/ActivityLog";
 import PerformanceTrend from "@/components/PerformanceTrend";
 import IncidentSummaryCard from "@/components/IncidentSummaryCard";
-import { useEnvironment } from "@/hooks/useEnvironment";
-import Spinner from "@/components/Spinner";
+import PerformanceModal from "@/components/PerformanceModal";
+import ChaosToast from "@/components/ChaosToast";
+import InsightDock from "@/components/InsightDock";
+import RunbookModal from "@/components/RunbookModal";
+import { useEnvironment, type ScoreBreakdown, type RunbookEntry } from "@/hooks/useEnvironment";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/+$/, '') || 'http://localhost:8000';
 
@@ -21,9 +24,79 @@ export default function Home() {
   const [lastEpisodeId, setLastEpisodeId] = useState<string | null>(null);
 
   const {
-    state, isConnected, error, rewardHistory,
+    state,
+    isConnected,
+    error,
+    rewardHistory,
     liveScore,
+    resetEnvironment,
   } = useEnvironment(800);
+
+  const [showPerformanceModal, setShowPerformanceModal] = useState(false);
+  const [modalScore, setModalScore] = useState<{
+    score: number;
+    breakdown: ScoreBreakdown;
+  } | null>(null);
+  const [modalContext, setModalContext] = useState<{
+    lastChaos?: string | null;
+    runbookMemory: RunbookEntry[];
+    runbookBankCount?: number;
+  } | null>(null);
+  const performanceModalOpenedForId = useRef<string | null>(null);
+  const lastChaosToastKey = useRef<string | null>(null);
+  const [chaosToastMessage, setChaosToastMessage] = useState<string | null>(null);
+  const [showRunbookModal, setShowRunbookModal] = useState(false);
+
+  useEffect(() => {
+    performanceModalOpenedForId.current = null;
+    lastChaosToastKey.current = null;
+    setShowPerformanceModal(false);
+    setModalScore(null);
+    setModalContext(null);
+    setChaosToastMessage(null);
+    setShowRunbookModal(false);
+  }, [state?.episode_id]);
+
+  useEffect(() => {
+    const done = Boolean(state?.done);
+    const episodeId = state?.episode_id;
+    if (!done || !episodeId) return;
+    if (performanceModalOpenedForId.current === episodeId) return;
+
+    const snap = state;
+    void (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/score`);
+        if (!res.ok) return;
+        const data = await res.json();
+        performanceModalOpenedForId.current = episodeId;
+        setModalScore({
+          score: data.score as number,
+          breakdown: data.breakdown as ScoreBreakdown,
+        });
+        setModalContext({
+          lastChaos:
+            (snap?.metadata?.last_chaos_event as string | undefined) ||
+            (snap?.metadata?.new_chaos_event as string | undefined) ||
+            null,
+          runbookMemory: snap?.runbook_memory ?? [],
+          runbookBankCount: snap?.runbook_bank_count,
+        });
+        setShowPerformanceModal(true);
+      } catch {
+        /* ignore */
+      }
+    })();
+  }, [state?.done, state?.episode_id]);
+
+  useEffect(() => {
+    const neu = state?.metadata?.new_chaos_event as string | undefined;
+    if (!neu || !state?.episode_id) return;
+    const key = `${state.episode_id}:${state.step_count}:${neu}`;
+    if (lastChaosToastKey.current === key) return;
+    lastChaosToastKey.current = key;
+    setChaosToastMessage(neu);
+  }, [state?.metadata?.new_chaos_event, state?.episode_id, state?.step_count]);
 
   // Handle window resize logic for responsive sidebar
   useEffect(() => {
@@ -69,21 +142,39 @@ export default function Home() {
     setIsStarting(true);
     setLastEpisodeId(state?.episode_id || null);
     setIsWaitingForReset(true);
+    const body = JSON.stringify({ task: selectedTask, chaos: chaosMode });
     try {
-      const res = await fetch(`${API_BASE}/start-sim`, {
+      let res = await fetch(`${API_BASE}/start-sim`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task: selectedTask, chaos: chaosMode }),
+        body,
       });
+      if (res.status === 404) {
+        res = await fetch(`${API_BASE}/start_sim`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+        });
+      }
       if (res.ok) {
         setIsSimRunning(true);
+      } else if (res.status === 404) {
+        // Older or proxied servers may omit /start-sim; still start an episode.
+        await resetEnvironment(selectedTask, chaosMode);
+        console.warn(
+          'POST /start-sim not found; started episode via /reset only (no live_inference subprocess).',
+        );
+      } else {
+        const t = await res.text().catch(() => '');
+        console.error('start-sim failed:', res.status, t);
       }
     } catch (err) {
       console.error('Failed to start sim:', err);
     } finally {
       setIsStarting(false);
+      setIsWaitingForReset(false);
     }
-  }, [selectedTask, chaosMode]);
+  }, [selectedTask, chaosMode, state?.episode_id, resetEnvironment]);
 
   const handleStopSim = useCallback(async () => {
     try {
@@ -96,6 +187,26 @@ export default function Home() {
 
   return (
     <div className="flex w-full h-full min-h-screen">
+      <ChaosToast message={chaosToastMessage} />
+
+      <InsightDock
+        connected={isConnected}
+        chaosModeActive={state?.chaos_mode_active}
+        chaosTuning={state?.chaos_tuning}
+        lastChaosEvent={state?.metadata?.last_chaos_event as string | undefined}
+        newChaosEvent={state?.metadata?.new_chaos_event as string | undefined}
+        runbookMatchCount={state?.runbook_memory?.length ?? 0}
+        runbookBankCount={state?.runbook_bank_count}
+        onOpenRunbook={() => setShowRunbookModal(true)}
+      />
+
+      <RunbookModal
+        isOpen={showRunbookModal}
+        onClose={() => setShowRunbookModal(false)}
+        entries={state?.runbook_memory ?? []}
+        bankCount={state?.runbook_bank_count}
+      />
+
       <Sidebar
         collapsed={sidebarCollapsed}
         state={state}
@@ -212,6 +323,20 @@ export default function Home() {
           </div>
         </main>
       </div>
+
+      {modalScore && modalContext && (
+        <PerformanceModal
+          isOpen={showPerformanceModal}
+          onClose={() => setShowPerformanceModal(false)}
+          taskName={state?.task_name}
+          stepCount={state?.step_count}
+          score={modalScore.score}
+          breakdown={modalScore.breakdown}
+          lastChaosEvent={modalContext.lastChaos}
+          runbookMemory={modalContext.runbookMemory}
+          runbookBankCount={modalContext.runbookBankCount}
+        />
+      )}
     </div>
   );
 }

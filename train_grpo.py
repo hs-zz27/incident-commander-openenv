@@ -61,7 +61,7 @@ def build_obs_prompt(obs_dict: Dict, step: int, action_history: List[str]) -> st
     ]
 
     for name, svc in sorted(obs_dict.get("services", {}).items()):
-        status = svc.get("status", "unknown")
+        status = svc.get("status", "healthy")
         emoji = "🟢" if status == "healthy" else ("🟡" if status == "degraded" else "🔴")
         lines.append(
             f"  {emoji} {name}: {status} | err={svc.get('error_rate', 0):.1%} "

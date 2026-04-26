@@ -38,8 +38,10 @@ export interface TimelineEvent {
 
 export interface RunbookEntry {
   fingerprint?: string;
+  incident_type?: string;
   task_name?: string;
   root_cause?: string;
+  root_cause_service?: string;
   fix_sequence?: string[];
   score?: number;
 }
@@ -49,11 +51,22 @@ export interface IncidentState {
   step_count: number;
   task_name: string;
   is_resolved: boolean;
+  /** True when the episode is terminal (matches observation `done`). */
+  done?: boolean;
   cumulative_reward: number;
   actions_taken: string[];
   services: Record<string, ServiceState>;
   incident_timeline: TimelineEvent[];
   runbook_memory?: RunbookEntry[];
+  /** Total persisted entries in the runbook bank (may be > matched suggestions). */
+  runbook_bank_count?: number;
+  /** Backend chaos injection toggle for this episode */
+  chaos_mode_active?: boolean;
+  chaos_tuning?: {
+    injection_probability?: number;
+    min_step?: number;
+    guarantee_by_step?: number;
+  };
   escalation_tier?: number;
   services_at_risk?: string[];
   metadata?: Record<string, any>;
@@ -119,6 +132,7 @@ export function useEnvironment(pollingIntervalMs = 800): UseEnvironmentReturn {
   const prevTimelineLen = useRef<number>(0);
   // Track episode id to reset the "new" count when episode changes
   const prevEpisodeId = useRef<string | null>(null);
+  const episodeDoneRef = useRef(false);
 
   // Auto-pilot state
   const [isAutoPilotRunning, setIsAutoPilotRunning] = useState(false);
@@ -139,6 +153,7 @@ export function useEnvironment(pollingIntervalMs = 800): UseEnvironmentReturn {
       }
       const data = await response.json();
       const incoming: IncidentState = data.state;
+      episodeDoneRef.current = Boolean(incoming.done);
 
       const episodeChanged = incoming.episode_id !== prevEpisodeId.current;
       if (episodeChanged) {
@@ -222,6 +237,9 @@ export function useEnvironment(pollingIntervalMs = 800): UseEnvironmentReturn {
   }, [fetchState]);
 
   const fetchLiveScore = useCallback(async () => {
+    if (episodeDoneRef.current) {
+      return;
+    }
     try {
       const response = await fetch(`${API_BASE}/score`);
       if (response.ok) {
@@ -314,14 +332,15 @@ export function useEnvironment(pollingIntervalMs = 800): UseEnvironmentReturn {
   }, []);
 
   useEffect(() => {
-    // Initial fetch
-    fetchState();
-    fetchLiveScore();
+    // Initial fetch (state first so episodeDoneRef is current before /score)
+    const tick = async () => {
+      await fetchState();
+      await fetchLiveScore();
+    };
+    void tick();
 
-    // Polling
     const intervalId = setInterval(() => {
-      fetchState();
-      fetchLiveScore();
+      void tick();
     }, pollingIntervalMs);
 
     return () => clearInterval(intervalId);

@@ -1,41 +1,41 @@
+# Incident Commander — FastAPI backend (OpenEnv-compatible)
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy project files
-COPY pyproject.toml ./
+# Installable package metadata
+COPY pyproject.toml README.md ./
+
+# Application code (root modules are imported by server.app and live_inference)
 COPY server/ ./server/
 COPY openenv.yaml ./
-COPY inference.py ./
-COPY multi_agent_inference.py ./
-COPY evaluate.py ./
-COPY run_baselines.py ./
-COPY plot_baselines.py ./
-COPY train_grpo.py ./
-COPY README.md ./
 COPY __init__.py ./
-COPY client.py ./
-COPY models.py ./
 
-# Install the package and all dependencies via pyproject.toml
-RUN pip install --no-cache-dir -e .
+COPY orchestrator.py evaluate_trained.py evaluate.py train_grpo.py ./
+COPY inference.py multi_agent_inference.py live_inference.py ./
+COPY run_baselines.py plot_baselines.py plot_training.py sft_warmstart.py ./
+COPY client.py models.py ./
 
-# Environment variables (HF Spaces compatible)
+ARG INSTALL_TRAIN=0
+RUN pip install --no-cache-dir --upgrade pip && \
+    if [ "$INSTALL_TRAIN" = "1" ]; then \
+      pip install --no-cache-dir -e ".[train]"; \
+    else \
+      pip install --no-cache-dir -e .; \
+    fi
+
+# Default matches docker-compose port mapping; override for HF Spaces (e.g. PORT=7860)
 ENV HOST=0.0.0.0
-ENV PORT=7860
+ENV PORT=8000
 ENV WORKERS=1
 
-# Expose both ports (8000 for local, 7860 for HF Spaces)
-EXPOSE 7860 8000
+EXPOSE 8000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${PORT}/health')" || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('PORT','8000')+'/health', timeout=4)"
 
-# Run the FastAPI server — HF Spaces sets PORT=7860
-CMD uvicorn server.app:app --host $HOST --port $PORT --workers $WORKERS
+CMD uvicorn server.app:app --host "$HOST" --port "$PORT" --workers "$WORKERS"

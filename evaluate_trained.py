@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -97,7 +98,14 @@ def parse_action(text: str) -> Optional[IncidentAction]:
 
     # --- Fuzzy action type matching ---
     raw_action = str(data["action_type"]).lower().strip()
-    
+
+    # Models sometimes put natural language in action_type ("do nothing for 20 steps").
+    if re.search(r"do\s*nothing\s+for\b", raw_action) or re.search(
+        r"\b(wait|nothing|noop)\b.+\b(step|steps|cycle|cycles|min|minute)\b",
+        raw_action,
+    ):
+        return None
+
     # Exact match first
     valid_actions = {at.value: at for at in ActionType}
     if raw_action in valid_actions:
@@ -133,8 +141,10 @@ def parse_action(text: str) -> Optional[IncidentAction]:
         if mapped and mapped in valid_actions:
             action_type = valid_actions[mapped]
         else:
-            # Last resort: substring match
+            # Last resort: substring match — never infer do_nothing from free text
             for valid_name, at in valid_actions.items():
+                if at == ActionType.DO_NOTHING:
+                    continue
                 if valid_name in raw_action or raw_action in valid_name:
                     action_type = at
                     break

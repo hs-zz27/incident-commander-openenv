@@ -59,7 +59,11 @@ def _touch_dashboard_endpoints() -> None:
 
 
 def run_live_task(
-    task_name: str, adapter_path: str, device: str, delay_seconds: float
+    task_name: str,
+    adapter_path: str,
+    device: str,
+    delay_seconds: float,
+    chaos_mode: bool = False,
 ) -> None:
     """Run a single task via backend Qwen policy + FastAPI endpoints."""
     rewards: List[float] = []
@@ -75,7 +79,11 @@ def run_live_task(
     )
 
     try:
-        _request_json("POST", "/reset", json={"task_name": task_name})
+        _request_json(
+            "POST",
+            "/reset",
+            json={"task_name": task_name, "chaos_mode": chaos_mode},
+        )
         _touch_dashboard_endpoints()
 
         while not done:
@@ -193,6 +201,11 @@ def main() -> None:
         default=1.0,
         help="Delay between steps for easier live dashboard viewing",
     )
+    parser.add_argument(
+        "--chaos",
+        action="store_true",
+        help="Enable chaos_mode on POST /reset (must match dashboard Start Sim)",
+    )
     args = parser.parse_args()
 
     try:
@@ -222,7 +235,13 @@ def main() -> None:
         tasks = available_tasks if available_tasks else list_tasks()
 
     for task_name in tasks:
-        run_live_task(task_name, args.adapter, args.device, args.delay)
+        run_live_task(
+            task_name,
+            args.adapter,
+            args.device,
+            args.delay,
+            chaos_mode=bool(args.chaos),
+        )
 
 
 if __name__ == "__main__":

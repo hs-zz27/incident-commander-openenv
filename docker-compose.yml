@@ -1,11 +1,44 @@
-version: '3.8'
+# Full stack: API + dashboard. The UI is built with NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+# so the browser (on your host) talks to the published API port.
+#
+# ML stack (torch + predict): docker compose build --build-arg INSTALL_TRAIN=1 api
+# Verify: ./scripts/docker-verify.sh  (requires Docker running)
+name: incident-commander
 
 services:
-  app:
-    build: .
-    container_name: incident-commander-env
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        INSTALL_TRAIN: "0"
+    image: incident-commander-api:local
+    container_name: incident-commander-api
     ports:
       - "8000:8000"
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8000"
+      WORKERS: "1"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
     restart: unless-stopped
-    env_file:
-      - .env
+
+  frontend:
+    build:
+      context: ./frontend_app
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    image: incident-commander-frontend:local
+    container_name: incident-commander-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped

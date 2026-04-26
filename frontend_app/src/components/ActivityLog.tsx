@@ -51,7 +51,11 @@ function actorConfig(actor?: string) {
     return { dot: 'bg-blue-400', badge: 'text-blue-300 bg-blue-500/15 border border-blue-500/30', label: 'Agent' };
   if (actor === 'environment')
     return { dot: 'bg-teal-400', badge: 'text-teal-300 bg-teal-500/15 border border-teal-500/30', label: 'Env' };
-  return { dot: 'bg-slate-400', badge: 'text-slate-300 bg-slate-500/15 border border-slate-500/30', label: actor ?? 'Unknown' };
+  return {
+    dot: 'bg-slate-400',
+    badge: 'text-slate-300 bg-slate-500/15 border border-slate-500/30',
+    label: actor?.trim() || 'Event',
+  };
 }
 
 interface ActivityLogProps {

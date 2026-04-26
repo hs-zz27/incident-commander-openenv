@@ -199,17 +199,49 @@ def create_incident_app() -> FastAPI:
     # ---- State ----
     @app.get("/state", response_model=StateResponse)
     async def state():
+        # Until POST /reset or POST /start-sim runs, avoid showing a stale or
+        # half-initialised episode to the dashboard (pollers hit /state immediately).
+        if not _is_initialised:
+            return StateResponse(
+                state={
+                    "episode_id": None,
+                    "step_count": 0,
+                    "task_name": "",
+                    "is_resolved": False,
+                    "done": False,
+                    "cumulative_reward": 0.0,
+                    "actions_taken": [],
+                    "services": {},
+                    "incident_timeline": [],
+                    "metadata": {},
+                    "runbook_memory": env.runbook_suggestions_public(),
+                    "runbook_bank_count": env.runbook_bank_size,
+                    "chaos_mode_active": False,
+                    "chaos_tuning": env.chaos_tuning_for_ui(),
+                }
+            )
+
         state_dict = env.state.model_dump()
-        # Enrich state with data from the last observation
+        # Enrich state with data from the last observation + live env fields so
+        # polling clients still see chaos/runbook hints between steps.
+        md: Dict[str, Any] = {}
         if _last_observation is not None:
-            state_dict["runbook_memory"] = [
-                entry if isinstance(entry, dict) else entry
-                for entry in (_last_observation.runbook_memory or [])
-            ]
             state_dict["escalation_tier"] = _last_observation.escalation_tier
             state_dict["services_at_risk"] = _last_observation.services_at_risk
-            # Expose last observation metadata (used for chaos injection indicator).
-            state_dict["metadata"] = _last_observation.metadata or {}
+            if _last_observation.metadata:
+                md.update(_last_observation.metadata)
+            state_dict["done"] = bool(_last_observation.done)
+        else:
+            state_dict["done"] = False
+
+        md.update(env.chaos_ui_metadata())
+        state_dict["metadata"] = md
+
+        state_dict["runbook_memory"] = env.runbook_suggestions_public()
+        state_dict["runbook_bank_count"] = env.runbook_bank_size
+        state_dict["chaos_mode_active"] = env.chaos_mode_active
+        state_dict["chaos_tuning"] = env.chaos_tuning_for_ui()
+
         return StateResponse(state=state_dict)
 
     # ---- Grade ----
@@ -682,7 +714,7 @@ def create_incident_app() -> FastAPI:
         lines.append("|:-----|:-------|:-------|:-------|")
         for evt in timeline:
             step = evt.get("step", "?")
-            event = evt.get("event", "unknown")
+            event = evt.get("event", "—")
             health = evt.get("health", 0)
             reward = evt.get("reward", 0)
             if health is not None:
@@ -698,7 +730,7 @@ def create_incident_app() -> FastAPI:
         lines.append("|:--------|:-------|:-----------|:--------|")
         for name, svc_data in sorted(state.services.items()):
             svc = svc_data if isinstance(svc_data, dict) else svc_data.model_dump() if hasattr(svc_data, 'model_dump') else {}
-            status = svc.get("status", "unknown")
+            status = svc.get("status", "healthy")
             emoji = "🟢" if status in ("healthy", "ServiceStatusEnum.HEALTHY") else ("🟡" if "degraded" in str(status).lower() else "🔴")
             err = svc.get("error_rate", 0)
             lat = svc.get("latency_ms", 0)
@@ -715,10 +747,27 @@ def create_incident_app() -> FastAPI:
 
 
     @app.post("/start-sim")
+    @app.post("/start_sim")
     async def start_sim(request: StartSimRequest = None):
         """Spawn live_inference.py as a background subprocess."""
         import subprocess
         req = request or StartSimRequest()
+
+        nonlocal _is_initialised, _last_observation
+        # Align HTTP env with the same task + chaos the subprocess will use,
+        # so the dashboard and InsightDock stay in sync (chaos_mode_active, etc.).
+        async with _lock:
+            try:
+                obs = env.reset(
+                    seed=None,
+                    task_name=req.task,
+                    chaos_mode=req.chaos,
+                )
+                _is_initialised = True
+                _last_observation = obs
+            except Exception as e:
+                logger.error(f"start-sim pre-reset failed: {e}\n{traceback.format_exc()}")
+                raise HTTPException(status_code=500, detail=str(e))
 
         # Kill existing sim if running
         if _sim_process["proc"] is not None:
@@ -738,6 +787,8 @@ def create_incident_app() -> FastAPI:
             "--task", req.task,
             "--delay", "1.5",
         ]
+        if req.chaos:
+            cmd.append("--chaos")
         logger.info(f"Starting sim: {' '.join(cmd)}")
         proc = subprocess.Popen(
             cmd, cwd=project_root,

@@ -19,7 +19,7 @@ function extractServiceName(action: string): string | null {
 }
 
 function humanizeAction(action: string): string {
-  if (!action) return "Unknown action";
+  if (!action) return "—";
   const [actionType, serviceName] = action.split(":");
 
   const templates: Record<string, string> = {
@@ -59,7 +59,7 @@ function buildSummary(state: IncidentState) {
     serviceTouches.set(service, (serviceTouches.get(service) ?? 0) + 1);
   }
   const rankedServices = [...serviceTouches.entries()].sort((a, b) => b[1] - a[1]);
-  const likelyRoot = rankedServices[0]?.[0] ?? "unknown";
+  const likelyRoot = rankedServices[0]?.[0] ?? null;
 
   const repeatedActions = actions.length - new Set(actions).size;
   const inefficiencyPct = actions.length
@@ -133,8 +133,8 @@ export default function IncidentSummaryCard({ state, isSimRunning }: IncidentSum
       <div className="rounded-lg border border-cyan-400/20 bg-cyan-500/[0.06] p-4 mb-4">
         <p className="text-sm text-on-surface leading-relaxed">
           {resolved
-            ? `Incident resolved in ${summary.totalSteps} steps. The model most likely focused on ${summary.likelyRoot} as the primary issue, and recovery actions in later steps helped stabilize the system.`
-            : `Incident is still active after ${summary.totalSteps} steps. Current signals suggest ${summary.likelyRoot} may be the main pressure point; more targeted recovery actions may be needed.`}
+            ? `Incident resolved in ${summary.totalSteps} steps. ${summary.likelyRoot ? `The model most likely focused on ${titleCase(summary.likelyRoot)} as the primary issue, and` : 'Recovery'} actions in later steps helped stabilize the system.`
+            : `Incident is still active after ${summary.totalSteps} steps. ${summary.likelyRoot ? `Current signals suggest ${titleCase(summary.likelyRoot)} may be the main pressure point` : 'Continue inspecting metrics and logs'}; more targeted recovery actions may be needed.`}
         </p>
       </div>
 
@@ -143,7 +143,9 @@ export default function IncidentSummaryCard({ state, isSimRunning }: IncidentSum
           <p className="text-[11px] text-on-surface-variant font-mono uppercase tracking-wide">
             Most Impacted Service
           </p>
-          <p className="mt-1 text-on-surface font-semibold">{titleCase(summary.likelyRoot)}</p>
+          <p className="mt-1 text-on-surface font-semibold">
+            {summary.likelyRoot ? titleCase(summary.likelyRoot) : 'Not enough signal yet'}
+          </p>
         </div>
         <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
           <p className="text-[11px] text-on-surface-variant font-mono uppercase tracking-wide">

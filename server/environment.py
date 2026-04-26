@@ -100,6 +100,9 @@ class IncidentCommanderEnvironment:
         self._http_mode: bool = http_mode
         self._episode_start_time: float = 0.0
         self._last_step_time: float = 0.0
+        # Wall-clock snapshot at episode end — prevents live /score from drifting
+        # while the HTTP server keeps running (grade_episode uses elapsed time).
+        self._grade_elapsed_snapshot: Optional[float] = None
 
     # ------------------------------------------------------------------
     # reset()
@@ -175,6 +178,7 @@ class IncidentCommanderEnvironment:
         # Time bounding reset (T2-5)
         self._episode_start_time = time.time()
         self._last_step_time = self._episode_start_time
+        self._grade_elapsed_snapshot = None
 
         # Runbook memory — advance episode counter and do lookup (T2-7)
         self._runbook_memory.advance_episode()
@@ -292,6 +296,45 @@ class IncidentCommanderEnvironment:
     # ------------------------------------------------------------------
     # step()
     # ------------------------------------------------------------------
+
+    def _snapshot_grade_wall_clock(self) -> None:
+        """Freeze wall-clock elapsed time for grading once the episode is terminal."""
+        if not self._http_mode:
+            return
+        if self._grade_elapsed_snapshot is None:
+            self._grade_elapsed_snapshot = max(
+                0.0, time.time() - self._episode_start_time
+            )
+
+    def chaos_ui_metadata(self) -> Dict[str, Any]:
+        """Metadata for UI polling (chaos survives between HTTP /state polls)."""
+        out: Dict[str, Any] = {}
+        if self._last_chaos_event_persistent:
+            out["last_chaos_event"] = self._last_chaos_event_persistent
+        if self._new_chaos_event_this_step:
+            out["new_chaos_event"] = self._new_chaos_event_this_step
+        return out
+
+    def runbook_suggestions_public(self) -> List[Dict[str, Any]]:
+        """Serialized runbook suggestions for GET /state (not tied to last step)."""
+        return list(self._runbook_suggestions)
+
+    @property
+    def runbook_bank_size(self) -> int:
+        return len(self._runbook_memory.entries)
+
+    @property
+    def chaos_mode_active(self) -> bool:
+        """Whether chaos injection is enabled for this episode (UI hint)."""
+        return bool(self._chaos_mode)
+
+    def chaos_tuning_for_ui(self) -> Dict[str, Any]:
+        """Chaos tuning parameters for dashboard transparency."""
+        return {
+            "injection_probability": self._chaos_agent.injection_probability,
+            "min_step": self._chaos_agent.min_step,
+            "guarantee_by_step": self._chaos_guarantee_step,
+        }
 
     def step(
         self,
@@ -603,6 +646,9 @@ class IncidentCommanderEnvironment:
         if self._is_done and not self._runbook_written and self._task and self._state.is_resolved:
             self._auto_write_runbook()
 
+        if self._is_done:
+            self._snapshot_grade_wall_clock()
+
         return self._build_observation(
             reward=reward, logs=logs, metrics_detail=metrics_detail, log_quality=log_quality
         )
@@ -678,7 +724,14 @@ class IncidentCommanderEnvironment:
                 "rewards": [],
             }
 
-        elapsed = time.time() - self._episode_start_time if self._http_mode else 0.0
+        if self._http_mode:
+            if self._is_done:
+                self._snapshot_grade_wall_clock()
+                elapsed = self._grade_elapsed_snapshot or 0.0
+            else:
+                elapsed = max(0.0, time.time() - self._episode_start_time)
+        else:
+            elapsed = 0.0
 
         score, breakdown = grade_episode(
             task=self._task,

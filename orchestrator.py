@@ -220,6 +220,15 @@ def should_override_model_action(
 
     candidate = _action_to_str(model_action)
 
+    # Never allow do_nothing while the incident is still active (avoids models
+    # or misparsed "wait N steps" actions burning the whole episode budget).
+    if model_action.action_type == ActionType.DO_NOTHING:
+        if not obs_dict.get("done"):
+            health = float(obs_dict.get("system_health_score", 1.0) or 1.0)
+            unhealthy = any(_service_is_unhealthy(s) for s in services.values())
+            if unhealthy or health < 0.995:
+                return True, "block_do_nothing_during_incident"
+
     # --- 1B: Action-type-aware repeat detection ---
     # inspect_* spam: override after 1 repeat (always wasted steps)
     # recovery actions: keep original threshold (may legitimately retry)
