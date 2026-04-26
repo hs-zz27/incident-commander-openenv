@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import sys
 import traceback
 from typing import Any, Dict, Optional
 
@@ -86,6 +88,11 @@ class PredictRequest(BaseModel):
         default="trained_model_1p5b_v5", description="LoRA adapter path"
     )
     device: str = Field(default="auto", description="Device: auto, cpu, cuda, mps")
+
+
+class StartSimRequest(BaseModel):
+    task: str = Field(default="random_incident", description="Task/scenario to run")
+    chaos: bool = Field(default=True, description="Enable chaos mode")
 
 
 # ---------------------------------------------------------------------------
@@ -702,6 +709,71 @@ def create_incident_app() -> FastAPI:
 
         report_text = "\n".join(lines)
         return {"report": report_text, "score": grade_result.get("score", 0), "is_resolved": state.is_resolved}
+
+    # ---- Simulation process management ----
+    _sim_process: dict = {"proc": None}
+
+
+    @app.post("/start-sim")
+    async def start_sim(request: StartSimRequest = None):
+        """Spawn live_inference.py as a background subprocess."""
+        import subprocess
+        req = request or StartSimRequest()
+
+        # Kill existing sim if running
+        if _sim_process["proc"] is not None:
+            try:
+                _sim_process["proc"].terminate()
+                _sim_process["proc"].wait(timeout=3)
+            except Exception:
+                try:
+                    _sim_process["proc"].kill()
+                except Exception:
+                    pass
+            _sim_process["proc"] = None
+
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        cmd = [
+            sys.executable, os.path.join(project_root, "live_inference.py"),
+            "--task", req.task,
+            "--delay", "1.5",
+        ]
+        logger.info(f"Starting sim: {' '.join(cmd)}")
+        proc = subprocess.Popen(
+            cmd, cwd=project_root,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True,
+        )
+        _sim_process["proc"] = proc
+        return {"status": "started", "task": req.task, "pid": proc.pid}
+
+    @app.post("/stop-sim")
+    async def stop_sim():
+        """Stop a running simulation subprocess."""
+        if _sim_process["proc"] is None:
+            return {"status": "not_running"}
+        try:
+            _sim_process["proc"].terminate()
+            _sim_process["proc"].wait(timeout=3)
+        except Exception:
+            try:
+                _sim_process["proc"].kill()
+            except Exception:
+                pass
+        _sim_process["proc"] = None
+        return {"status": "stopped"}
+
+    @app.get("/sim-status")
+    async def sim_status():
+        """Check if simulation is currently running."""
+        proc = _sim_process["proc"]
+        if proc is None:
+            return {"running": False}
+        poll = proc.poll()
+        if poll is not None:
+            _sim_process["proc"] = None
+            return {"running": False, "exit_code": poll}
+        return {"running": True, "pid": proc.pid}
 
     return app
 

@@ -23,6 +23,9 @@ export interface TimelineEvent {
   event: string;
   severity?: string;
   health?: number;
+  health_delta?: number;
+  reward?: number;
+  event_type?: string;
   description?: string;
   affected_services?: string[];
   chaos_event?: string;
@@ -313,12 +316,16 @@ export function useEnvironment(pollingIntervalMs = 800): UseEnvironmentReturn {
   useEffect(() => {
     // Initial fetch
     fetchState();
+    fetchLiveScore();
 
     // Polling
-    const intervalId = setInterval(fetchState, pollingIntervalMs);
+    const intervalId = setInterval(() => {
+      fetchState();
+      fetchLiveScore();
+    }, pollingIntervalMs);
 
     return () => clearInterval(intervalId);
-  }, [fetchState, pollingIntervalMs]);
+  }, [fetchState, fetchLiveScore, pollingIntervalMs]);
 
   return {
     state, isConnected, error, rewardHistory, resetEnvironment,

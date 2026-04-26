@@ -73,10 +73,6 @@ class IncidentCommanderEnvironment:
         self._chaos_mode: bool = False
         self._chaos_rng: random.Random = random.Random()
         self._last_chaos_event: Optional[str] = None
-        self._last_chaos_event_persistent: Optional[str] = None
-        self._new_chaos_event_this_step: Optional[str] = None
-        # Chaos visibility tuning (pure random, task-agnostic)
-        self._chaos_guarantee_step: int = 6  # if chaos_mode and no chaos by this step, force one random inject
 
         # Runbook memory — persistent across episodes (T2-7)
         self._runbook_memory: RunbookMemory = RunbookMemory()
@@ -142,8 +138,6 @@ class IncidentCommanderEnvironment:
         self._inspected_services = set()
         self._prev_health = compute_health_score(self._services)
         self._last_chaos_event = None
-        self._last_chaos_event_persistent = None
-        self._new_chaos_event_this_step = None
 
         # Initialize chaos agent
         self._chaos_mode = chaos_mode
@@ -180,7 +174,6 @@ class IncidentCommanderEnvironment:
         self._runbook_written = False
         self._runbook_correct = False
         self._runbook_used = False
-        self._resolved_grace_step = False
 
         self._state = IncidentState(
             episode_id=episode_id or str(uuid4()),
@@ -308,21 +301,12 @@ class IncidentCommanderEnvironment:
             raise RuntimeError("Environment not initialised. Call reset() first.")
 
         if self._is_done:
-            # Grace step: if resolved but agent hasn't written runbook yet,
-            # allow one more step for write_runbook only
-            if (
-                self._state.is_resolved
-                and not self._runbook_written
-                and action.action_type.value == "write_runbook"
-            ):
-                pass  # Fall through to process write_runbook below
-            else:
-                return self._build_observation(
-                    reward=0.0,
-                    logs=[],
-                    metrics_detail=None,
-                    log_quality="full",
-                )
+            return self._build_observation(
+                reward=0.0,
+                logs=[],
+                metrics_detail=None,
+                log_quality="full",
+            )
 
         self._state.step_count += 1
         self._last_action_error = None
@@ -335,11 +319,6 @@ class IncidentCommanderEnvironment:
 
         # Build action string for history
         action_str = f"{action_type}:{service_name}" if service_name else action_type
-
-        # If agent had a grace step (system resolved) but didn't write_runbook,
-        # end the episode now — they chose to skip the runbook.
-        if self._resolved_grace_step and action_type != "write_runbook":
-            self._is_done = True
 
         # Validate service name for service-specific actions
         needs_service = action_type in (
@@ -374,6 +353,7 @@ class IncidentCommanderEnvironment:
         logs: List[str] = []
         metrics_detail = None
         log_quality = "full"
+        action_description = ""
 
         if action_type == "inspect_logs":
             logs_result = generate_logs(
@@ -381,12 +361,19 @@ class IncidentCommanderEnvironment:
             )
             logs, log_quality = logs_result
             self._inspected_services.add(service_name)
+            if logs:
+                action_description = "\n".join(logs)
+            else:
+                action_description = "No logs found."
 
         elif action_type == "inspect_metrics":
             metrics_detail = generate_metrics(
                 service_name, self._services, self._task.name
             )
             self._inspected_services.add(service_name)
+            if metrics_detail:
+                # Format metrics simply
+                action_description = ", ".join(f"{k}={v}" for k, v in metrics_detail.items())
 
         elif action_type == "restart_service":
             self._services = apply_restart(
@@ -394,37 +381,57 @@ class IncidentCommanderEnvironment:
             )
             # Propagate dependency effects
             self._services = propagate_dependencies(self._services, self._task.name)
+            action_description = f"Restarted {service_name}."
 
         elif action_type == "scale_service":
             self._services = apply_scale(self._services, service_name)
             self._services = propagate_dependencies(self._services, self._task.name)
+            action_description = f"Scaled {service_name} instances."
 
         elif action_type == "rollback":
             self._services = apply_rollback(
                 self._services, service_name, good_version="v1.0.0"
             )
             self._services = propagate_dependencies(self._services, self._task.name)
+            action_description = f"Rolled back {service_name} to v1.0.0."
 
         elif action_type == "clear_cache":
             self._services = apply_clear_cache(self._services)
             self._services = propagate_dependencies(self._services, self._task.name)
+            action_description = "Cleared global cache."
 
         elif action_type == "escalate":
             self._escalated = True
             self._is_done = True
+            action_description = "Incident escalated to human."
 
         elif action_type == "write_runbook":
-            # Agent writes runbook — only meaningful at episode end (Audit Fix #7)
-            if self._is_done or self._state.step_count >= self._task.max_steps - 1:
+            # Agent writes runbook — allow when: episode done, near step limit,
+            # OR system is already fully healthy (resolved but _is_done not set yet)
+            curr_health_pre = compute_health_score(self._services)
+            all_healthy_pre = all(
+                s.status == ServiceStatusEnum.HEALTHY for s in self._services.values()
+            )
+            allowed = (
+                self._is_done
+                or self._state.step_count >= self._task.max_steps - 1
+                or (all_healthy_pre and curr_health_pre >= 0.95)
+            )
+            if allowed:
                 summary = action.metadata.get("summary", "") if action.metadata else ""
                 self._runbook_written = True
                 if self._task.root_cause_service.lower() in summary.lower():
                     self._runbook_correct = True
+                # Treat write_runbook as terminal when system is already resolved
+                if all_healthy_pre and curr_health_pre >= 0.95:
+                    self._state.is_resolved = True
+                    self._is_done = True
+                action_description = f"Runbook summary: {summary}"
             else:
                 self._last_action_error = "write_runbook only allowed on final step or after resolution"
 
         elif action_type == "do_nothing":
-            pass  # literally nothing
+            action_description = "Agent took no action."
 
         self._actions_history.append(action_str)
 
@@ -442,7 +449,7 @@ class IncidentCommanderEnvironment:
                     break
 
         # --- Chaos injection (before computing reward) ---
-        self._new_chaos_event_this_step = None
+        self._last_chaos_event = None
         if self._chaos_mode:
             chaos_result = self._chaos_agent.maybe_inject(
                 step=self._state.step_count,
@@ -452,29 +459,17 @@ class IncidentCommanderEnvironment:
             )
             if chaos_result:
                 self._last_chaos_event = chaos_result
-                self._last_chaos_event_persistent = chaos_result
-                self._new_chaos_event_this_step = chaos_result
                 self._services = propagate_dependencies(self._services, self._task.name)
-            # Guarantee: if chaos_mode is enabled but nothing has injected by N,
-            # force exactly one random injection (still random target + profile).
-            elif (
-                self._state.step_count >= self._chaos_guarantee_step
-                and len(self._chaos_agent.injected_services) == 0
-            ):
-                forced = self._chaos_agent.force_random_inject(
-                    step=self._state.step_count,
-                    current_services=self._services,
-                    rng=self._chaos_rng,
-                    inspected_services=self._inspected_services,
-                )
-                if forced:
-                    self._last_chaos_event = forced
-                    self._last_chaos_event_persistent = forced
-                    self._new_chaos_event_this_step = forced
-                    self._services = propagate_dependencies(self._services, self._task.name)
 
-        # NOTE: No task-specific scripted chaos. Chaos mode is purely random injection
-        # via ChaosAgent.maybe_inject() above, and should apply consistently to any task.
+        # Scripted chaos for chaos_cascade task: notification fails at step 8
+        if (
+            self._task.name == "chaos_cascade"
+            and self._state.step_count == 8
+            and "notification" not in self._chaos_agent.injected_services
+        ):
+            self._chaos_agent.force_inject("notification", self._services, "oom_crash")
+            self._last_chaos_event = "notification"
+            self._services = propagate_dependencies(self._services, self._task.name)
 
         # --- Severity escalation tick AFTER action (Audit Fix #5) ---
         # Run tick after action so health_delta reflects agent's impact, not escalation
@@ -489,15 +484,7 @@ class IncidentCommanderEnvironment:
         )
         if all_healthy and curr_health >= 0.95:
             self._state.is_resolved = True
-            # If agent just wrote a runbook on this step, end now.
-            # Otherwise, give agent one grace step to optionally write_runbook.
-            if action_type == "write_runbook" or self._runbook_written:
-                self._is_done = True
-            else:
-                # Mark resolved but DON'T set _is_done yet.
-                # Next step will end the episode (via the grace step logic
-                # at the top of step(), or via the fallthrough below).
-                self._resolved_grace_step = True
+            self._is_done = True
 
         # Check step limit
         if self._state.step_count >= self._task.max_steps:
@@ -542,7 +529,7 @@ class IncidentCommanderEnvironment:
                 reward += 0.02
 
         # Record timeline event
-        event = {
+        event: Dict[str, Any] = {
             "step": self._state.step_count,
             "event": action_str,
             "health": round(curr_health, 4),
@@ -550,6 +537,8 @@ class IncidentCommanderEnvironment:
             "reward": round(reward, 4),
             "escalation_tier": self._escalation_tier,
         }
+        if action_description:
+            event["description"] = action_description
         if self._last_chaos_event:
             event["chaos_event"] = self._last_chaos_event
         if self._last_action_error:
@@ -711,10 +700,8 @@ class IncidentCommanderEnvironment:
 
         # Build metadata with optional chaos event info and log quality
         obs_metadata: Dict[str, Any] = {}
-        if self._new_chaos_event_this_step:
-            obs_metadata["new_chaos_event"] = self._new_chaos_event_this_step
-        if self._last_chaos_event_persistent:
-            obs_metadata["last_chaos_event"] = self._last_chaos_event_persistent
+        if self._last_chaos_event:
+            obs_metadata["new_chaos_event"] = self._last_chaos_event
         if log_quality != "full":
             obs_metadata["log_quality"] = log_quality
 

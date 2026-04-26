@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useRef } from 'react';
-import type { TimelineEvent, RunbookEntry } from '@/hooks/useEnvironment';
+import type { TimelineEvent } from '@/hooks/useEnvironment';
 
 // ── Severity config ────────────────────────────────────────────────────────────
 const SEVERITY_CONFIG: Record<string, { dot: string; bar: string; badge: string; icon: string }> = {
@@ -56,12 +56,11 @@ function actorConfig(actor?: string) {
 
 interface ActivityLogProps {
   timeline: TimelineEvent[];
-  runbookMemory?: RunbookEntry[];
-  escalationTier?: number;
-  servicesAtRisk?: string[];
+  isSimRunning?: boolean;
+  forceSpinner?: boolean;
 }
 
-export default function ActivityLog({ timeline, runbookMemory, escalationTier, servicesAtRisk }: ActivityLogProps) {
+export default function ActivityLog({ timeline, isSimRunning, forceSpinner }: ActivityLogProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to top whenever a new entry arrives (we render newest-first)
@@ -72,7 +71,8 @@ export default function ActivityLog({ timeline, runbookMemory, escalationTier, s
   }, [timeline.length]);
 
   // Show most recent events first, cap at 30
-  const events = [...timeline].reverse().slice(0, 30);
+  // If forceSpinner is true, act as if the timeline is empty so the spinner shows.
+  const events = forceSpinner ? [] : [...timeline].reverse().slice(0, 30);
 
   return (
     <div className="flex flex-col gap-4 h-full">
@@ -98,54 +98,25 @@ export default function ActivityLog({ timeline, runbookMemory, escalationTier, s
       {/* Card */}
       <div className="bg-[#1E293B]/60 backdrop-blur-xl border border-white/10 rounded-xl overflow-hidden flex-1 flex flex-col">
         <div ref={scrollRef} className="flex-1 overflow-y-auto p-5 space-y-3">
-          {/* Runbook Memory Banner */}
-          {runbookMemory && runbookMemory.length > 0 && (
-            <div className="rounded-lg border border-purple-500/30 bg-purple-500/10 p-3 mb-2">
-              <div className="flex items-center gap-2 mb-1">
-                <span className="material-symbols-outlined text-purple-400 text-sm">auto_stories</span>
-                <span className="text-[11px] font-semibold text-purple-300 uppercase tracking-wider">Memory Recall</span>
-              </div>
-              {runbookMemory.map((entry, idx) => (
-                <div key={idx} className="text-[11px] text-purple-200/80 mt-1">
-                  <span className="text-purple-300">📘</span> Previously seen: <span className="font-mono text-purple-200">{entry.root_cause || entry.task_name || 'similar pattern'}</span>
-                  {entry.fix_sequence && entry.fix_sequence.length > 0 && (
-                    <span className="text-purple-200/60"> → Fix: {entry.fix_sequence.join(' → ')}</span>
-                  )}
-                  {entry.score != null && (
-                    <span className="text-purple-300/60 ml-1">(scored {entry.score.toFixed(2)})</span>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Escalation Tier Warning */}
-          {escalationTier != null && escalationTier >= 3 && (
-            <div className={`rounded-lg border p-2.5 mb-2 flex items-center gap-2 ${
-              escalationTier >= 4
-                ? 'border-red-500/40 bg-red-500/10 text-red-300'
-                : 'border-orange-500/30 bg-orange-500/10 text-orange-300'
-            }`}>
-              <span className="material-symbols-outlined text-sm animate-pulse">
-                {escalationTier >= 4 ? 'emergency' : 'warning'}
-              </span>
-              <span className="text-[10px] font-semibold uppercase tracking-wider">
-                Escalation Tier {escalationTier}/4 — {escalationTier >= 4 ? 'Full Cascade Active' : 'Situation Degrading'}
-              </span>
-              {servicesAtRisk && servicesAtRisk.length > 0 && (
-                <span className="text-[9px] font-mono opacity-70 ml-auto">
-                  At risk: {servicesAtRisk.join(', ')}
-                </span>
-              )}
-            </div>
-          )}
           {events.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-on-surface-variant/50 gap-3 py-12">
-              <span className="material-symbols-outlined text-4xl opacity-40">hourglass_empty</span>
-              <p className="font-caption text-caption">Waiting for simulation…</p>
-              <p className="font-caption text-[10px] text-on-surface-variant/30">
-                POST /reset → run inference.py
-              </p>
+              {isSimRunning ? (
+                <>
+                  <div className="w-8 h-8 border-2 border-primary/20 border-t-primary rounded-full animate-spin mb-2" />
+                  <p className="font-caption text-caption">Initializing simulation…</p>
+                  <p className="font-caption text-[10px] text-on-surface-variant/30">
+                    Waiting for initial state from background process
+                  </p>
+                </>
+              ) : (
+                <>
+                  <span className="material-symbols-outlined text-4xl opacity-40">hourglass_empty</span>
+                  <p className="font-caption text-caption">Waiting for simulation…</p>
+                  <p className="font-caption text-[10px] text-on-surface-variant/30">
+                    Click Start Sim to begin
+                  </p>
+                </>
+              )}
             </div>
           ) : (
             events.map((evt, i) => {
@@ -198,9 +169,45 @@ export default function ActivityLog({ timeline, runbookMemory, escalationTier, s
 
                     {/* Row 2: description */}
                     {evt.description && (
-                      <p className="mt-1.5 text-[12px] text-on-surface-variant leading-relaxed line-clamp-2">
-                        {evt.description}
-                      </p>
+                      evt.event.startsWith('inspect_logs') || evt.event.startsWith('inspect_metrics') ? (
+                        <details className="mt-2 group">
+                          <summary className="text-[11px] font-medium text-on-surface-variant/80 hover:text-on-surface cursor-pointer select-none transition-colors outline-none inline-flex items-center gap-1 list-none [&::-webkit-details-marker]:hidden">
+                            <span className="material-symbols-outlined text-[14px] group-open:rotate-90 transition-transform">chevron_right</span>
+                            View output details ({evt.description.split('\n').length} lines)
+                          </summary>
+                          <div className="mt-2 relative rounded-md border border-white/5 shadow-inner overflow-hidden">
+                            {/* Copy button */}
+                            <button
+                              className="absolute top-1.5 right-1.5 text-[10px] text-slate-400 hover:text-white bg-white/5 hover:bg-white/10 px-2 py-0.5 rounded transition-colors z-10 flex items-center gap-1"
+                              onClick={() => navigator.clipboard.writeText(evt.description || '')}
+                              title="Copy to clipboard"
+                            >
+                              <span className="material-symbols-outlined text-[12px]">content_copy</span>
+                              Copy
+                            </button>
+                            <div className="max-h-56 overflow-y-auto bg-black/40 p-0 font-mono text-[11px] leading-[1.6]">
+                              {evt.description.split('\n').map((line, lineIdx) => {
+                                // Color log levels
+                                let levelClass = 'text-slate-300';
+                                if (line.includes('CRITICAL')) levelClass = 'text-red-400 font-semibold';
+                                else if (line.includes('ERROR')) levelClass = 'text-red-300';
+                                else if (line.includes('WARN')) levelClass = 'text-yellow-300';
+                                else if (line.includes('INFO')) levelClass = 'text-blue-300/70';
+                                return (
+                                  <div key={lineIdx} className={`flex hover:bg-white/5 transition-colors ${lineIdx % 2 === 0 ? '' : 'bg-white/[0.02]'}`}>
+                                    <span className="w-8 flex-shrink-0 text-right text-slate-600 select-none pr-2 border-r border-white/5 py-px">{lineIdx + 1}</span>
+                                    <span className={`pl-2 py-px whitespace-pre-wrap break-all ${levelClass}`}>{line || ' '}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </details>
+                      ) : (
+                        <div className="mt-2 text-[11px] leading-relaxed text-on-surface-variant whitespace-pre-wrap">
+                          {evt.description}
+                        </div>
+                      )
                     )}
 
                     {/* Row 3: badges row */}
@@ -210,25 +217,59 @@ export default function ActivityLog({ timeline, runbookMemory, escalationTier, s
                         {badgeLabel}
                       </span>
 
-                      {/* Chaos injection badge */}
-                      {evt.chaos_event && (
-                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full text-fuchsia-200 bg-fuchsia-500/10 border border-fuchsia-500/30">
-                          CHAOS: {evt.chaos_event}
-                        </span>
-                      )}
-
-                      {/* Health score chip */}
+                      {/* Health score and Delta chip */}
                       {healthPct != null && (
-                        <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border
-                          ${healthPct >= 80
-                            ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30'
-                            : healthPct >= 50
-                            ? 'text-yellow-300 bg-yellow-500/10 border-yellow-500/30'
-                            : 'text-red-300 bg-red-500/10 border-red-500/30'
-                          }`}
-                        >
-                          ♥ {healthPct}%
-                        </span>
+                        <div className="flex items-center gap-1">
+                          <span
+                            className={`text-[10px] font-mono px-2 py-0.5 rounded-full border cursor-help
+                              ${healthPct >= 80
+                                ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30'
+                                : healthPct >= 50
+                                  ? 'text-yellow-300 bg-yellow-500/10 border-yellow-500/30'
+                                  : 'text-red-300 bg-red-500/10 border-red-500/30'
+                              }`}
+                            title="Current System Health"
+                          >
+                            ♥ {healthPct}%
+                          </span>
+
+                          {evt.health_delta !== undefined && (
+                            <span
+                              className={`text-[10px] font-mono px-2 py-0.5 rounded-full border flex items-center gap-0.5 cursor-help
+                                ${evt.health_delta > 0.0001
+                                  ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30'
+                                  : evt.health_delta < -0.0001
+                                    ? 'text-red-300 bg-red-500/10 border-red-500/30'
+                                    : 'text-slate-300 bg-slate-500/10 border-slate-500/30'
+                                }`}
+                              title={`Health changed by ${(evt.health_delta * 100).toFixed(1)}%`}
+                            >
+                              {evt.health_delta > 0.0001 ? (
+                                <><span className="material-symbols-outlined text-[12px]">trending_up</span> +{(evt.health_delta * 100).toFixed(1)}%</>
+                              ) : evt.health_delta < -0.0001 ? (
+                                <><span className="material-symbols-outlined text-[12px]">trending_down</span> {(evt.health_delta * 100).toFixed(1)}%</>
+                              ) : (
+                                <><span className="material-symbols-outlined text-[12px]">trending_flat</span> 0.0%</>
+                              )}
+                            </span>
+                          )}
+
+                          {evt.reward !== undefined && (
+                            <span
+                              className={`text-[10px] font-mono px-2 py-0.5 rounded-full border flex items-center gap-0.5 cursor-help
+                                ${evt.reward > 0
+                                  ? 'text-amber-300 bg-amber-500/10 border-amber-500/30'
+                                  : evt.reward < 0
+                                    ? 'text-red-300 bg-red-500/10 border-red-500/30'
+                                    : 'text-slate-300 bg-slate-500/10 border-slate-500/30'
+                                }`}
+                              title={`Step Reward: ${evt.reward > 0 ? '+' : ''}${evt.reward.toFixed(3)}`}
+                            >
+                              <span className="material-symbols-outlined text-[12px]">stars</span>
+                              {evt.reward > 0 ? '+' : ''}{evt.reward.toFixed(2)}
+                            </span>
+                          )}
+                        </div>
                       )}
 
                       {/* Affected services */}
