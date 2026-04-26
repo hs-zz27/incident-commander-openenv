@@ -12,7 +12,7 @@ import InsightDock from "@/components/InsightDock";
 import RunbookModal from "@/components/RunbookModal";
 import { useEnvironment, type ScoreBreakdown, type RunbookEntry } from "@/hooks/useEnvironment";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/+$/, '') || 'http://localhost:8000';
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/+$/, '') || '';
 
 export default function Home() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
