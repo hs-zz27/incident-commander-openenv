@@ -4,56 +4,26 @@ import Sidebar from "@/components/Sidebar";
 import Header from "@/components/Header";
 import ServiceMap from "@/components/ServiceMap";
 import ActivityLog from "@/components/ActivityLog";
-import MetricsGauges from "@/components/MetricsGauges";
 import PerformanceTrend from "@/components/PerformanceTrend";
-import ReportModal from "@/components/ReportModal";
+import IncidentSummaryCard from "@/components/IncidentSummaryCard";
 import { useEnvironment } from "@/hooks/useEnvironment";
+import Spinner from "@/components/Spinner";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/+$/, '') || 'http://localhost:8000';
 
 export default function Home() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [reportContent, setReportContent] = useState<string | null>(null);
-  const [showReport, setShowReport] = useState(false);
   const [selectedTask, setSelectedTask] = useState('random_incident');
   const [chaosMode, setChaosMode] = useState(true);
-  const [modelConfig, setModelConfig] = useState({
-    base_model: 'sft_merged_1p5b_v5',
-    adapter_path: 'trained_model_1p5b_v5',
-    device: 'auto' as const,
-  });
-  
+  const [isSimRunning, setIsSimRunning] = useState(false);
+  const [isStarting, setIsStarting] = useState(false);
+  const [isWaitingForReset, setIsWaitingForReset] = useState(false);
+  const [lastEpisodeId, setLastEpisodeId] = useState<string | null>(null);
+
   const {
-    state, isConnected, error, rewardHistory, resetEnvironment,
-    isAutoPilotRunning, startAutoPilot, stopAutoPilot, autoPilotSteps,
-    liveScore, fetchLiveScore,
-    modelInfo, fetchModelInfo,
+    state, isConnected, error, rewardHistory,
+    liveScore,
   } = useEnvironment(800);
-
-  // Tiny toast/banner for chaos: show latest event (persisted) and pulse when new
-  const chaosEvent = (state?.metadata?.last_chaos_event as string | undefined) || (state?.metadata?.new_chaos_event as string | undefined);
-  const chaosIsNew = Boolean(state?.metadata?.new_chaos_event);
-
-  // Auto-fetch report when episode resolves
-  const fetchReport = useCallback(async () => {
-    try {
-      const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/+$/, '') || 'http://localhost:8000';
-      const res = await fetch(`${apiBase}/report`);
-      if (res.ok) {
-        const data = await res.json();
-        setReportContent(data.report);
-        setShowReport(true);
-      }
-    } catch (e) {
-      console.error('Failed to fetch report:', e);
-    }
-  }, []);
-
-  // When episode resolves, auto-show report
-  useEffect(() => {
-    if (state?.is_resolved && !isAutoPilotRunning) {
-      fetchReport();
-      fetchLiveScore();
-    }
-  }, [state?.is_resolved, isAutoPilotRunning, fetchReport, fetchLiveScore]);
 
   // Handle window resize logic for responsive sidebar
   useEffect(() => {
@@ -62,124 +32,186 @@ export default function Home() {
         setSidebarCollapsed(true);
       }
     };
-
-    // Initial check
     handleResize();
-
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
+
+  // Poll sim-status to track if live_inference.py is still running
+  useEffect(() => {
+    if (!isSimRunning) return;
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/sim-status`);
+        const data = await res.json();
+        if (!data.running) {
+          setIsSimRunning(false);
+        }
+      } catch {
+        // Backend might be busy — ignore
+      }
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [isSimRunning]);
+
+  // Clear the "waiting for reset" state once a new episode ID is observed
+  useEffect(() => {
+    if (isWaitingForReset && state?.episode_id && state.episode_id !== lastEpisodeId) {
+      setIsWaitingForReset(false);
+    }
+  }, [state?.episode_id, lastEpisodeId, isWaitingForReset]);
 
   const handleToggleSidebar = () => {
     setSidebarCollapsed(!sidebarCollapsed);
   };
 
-  const handleReset = async (taskName: string, chaosMode: boolean) => {
-    setReportContent(null);
-    setShowReport(false);
-    await resetEnvironment(taskName, chaosMode);
-  };
-
-  const ensureReset = useCallback(async () => {
-    if (!state?.episode_id) {
-      await resetEnvironment(selectedTask, chaosMode);
+  const handleStartSim = useCallback(async () => {
+    setIsStarting(true);
+    setLastEpisodeId(state?.episode_id || null);
+    setIsWaitingForReset(true);
+    try {
+      const res = await fetch(`${API_BASE}/start-sim`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task: selectedTask, chaos: chaosMode }),
+      });
+      if (res.ok) {
+        setIsSimRunning(true);
+      }
+    } catch (err) {
+      console.error('Failed to start sim:', err);
+    } finally {
+      setIsStarting(false);
     }
-  }, [state?.episode_id, resetEnvironment, selectedTask, chaosMode]);
+  }, [selectedTask, chaosMode]);
 
-  const handleStartAutoPilot = useCallback(() => {
-    startAutoPilot({ ensureReset, modelConfig });
-  }, [startAutoPilot, ensureReset, modelConfig]);
+  const handleStopSim = useCallback(async () => {
+    try {
+      await fetch(`${API_BASE}/stop-sim`, { method: 'POST' });
+    } catch {
+      // ignore
+    }
+    setIsSimRunning(false);
+  }, []);
 
   return (
     <div className="flex w-full h-full min-h-screen">
       <Sidebar
         collapsed={sidebarCollapsed}
         state={state}
-        selectedTask={selectedTask}
-        onSelectedTaskChange={setSelectedTask}
-        chaosMode={chaosMode}
-        onChaosModeChange={setChaosMode}
-        modelConfig={modelConfig}
-        onModelConfigChange={setModelConfig}
-        modelInfo={modelInfo}
-        onReset={handleReset}
-        isAutoPilotRunning={isAutoPilotRunning}
-        onStartAutoPilot={handleStartAutoPilot}
-        onStopAutoPilot={stopAutoPilot}
-        liveScore={liveScore}
+        services={state?.services || {}}
       />
 
       <div
-        className={`flex-1 flex flex-col min-h-screen main-content-transition ${sidebarCollapsed ? 'expanded-main' : 'ml-60'}`}
+        className={`flex-1 flex flex-col min-h-screen main-content-transition ${sidebarCollapsed ? 'expanded-main' : 'ml-48'}`}
         id="main-wrapper"
       >
-        <Header onToggleSidebar={handleToggleSidebar} isConnected={isConnected} taskName={state?.task_name} />
+        <Header
+          onToggleSidebar={handleToggleSidebar}
+          isConnected={isConnected}
+          taskName={state?.task_name}
+          selectedTask={selectedTask}
+          onSelectedTaskChange={setSelectedTask}
+          chaosMode={chaosMode}
+          onChaosModeChange={setChaosMode}
+          isSimRunning={isSimRunning}
+          isStarting={isStarting}
+          onStartSim={handleStartSim}
+          onStopSim={handleStopSim}
+        />
 
-        <main className="flex-1 pt-8 px-8 pb-12 overflow-y-auto">
+        <main className="flex-1 pt-8 px-8 pb-12 overflow-y-auto scroll-smooth">
           <div className="mb-stack-lg max-w-[1400px] mx-auto w-full flex justify-between items-end">
             <div>
               <h2 className="font-h1 text-h1 text-on-surface">Service Map Overview</h2>
               <p className="font-body-md text-body-md text-on-surface-variant mt-1">Real-time status of interconnected core systems.</p>
             </div>
-            <div className="flex items-center gap-3">
-              {chaosEvent && (
-                <div className={`flex items-center gap-2 bg-fuchsia-500/15 text-fuchsia-200 px-4 py-2 rounded-lg border border-fuchsia-500/30 font-body-sm ${chaosIsNew ? 'animate-pulse' : ''}`}>
-                  <span className="material-symbols-outlined text-sm">bolt</span>
-                  Chaos event: <span className="font-mono">{chaosEvent}</span>
-                </div>
-              )}
-              {/* Resolved Banner */}
-              {state?.is_resolved && (
-                <div className="flex items-center gap-2 bg-emerald-500/15 text-emerald-300 px-4 py-2 rounded-lg border border-emerald-500/30 font-body-sm animate-pulse">
-                  <span className="material-symbols-outlined text-sm">check_circle</span>
-                  Incident Resolved
-                  <button
-                    onClick={fetchReport}
-                    className="ml-2 text-[10px] font-bold uppercase bg-emerald-500/20 hover:bg-emerald-500/30 px-2 py-0.5 rounded transition-colors"
-                  >
-                    View Report
-                  </button>
-                </div>
-              )}
-              {error && (
-                <div className="bg-error/20 text-error px-4 py-2 rounded-lg border border-error/50 font-body-sm">
-                  Connection Error: {error}
-                </div>
-              )}
-            </div>
+            {error && (
+              <div className="bg-error/20 text-error px-4 py-2 rounded-lg border border-error/50 font-body-sm">
+                Connection Error: {error}
+              </div>
+            )}
           </div>
 
           <div className="responsive-dashboard-grid max-w-[1400px] mx-auto w-full">
-            <div className="grid-col-span-core flex flex-col gap-stack-md min-w-0">
-              <ServiceMap services={state?.services || {}} />
+            <div id="service-map" className="grid-col-span-core flex flex-col gap-stack-md min-w-0">
+              <ServiceMap services={state?.services || {}} isInitializing={isWaitingForReset} />
             </div>
 
-            <div className="grid-col-span-activity flex flex-col gap-stack-md min-w-0">
+            <div id="activity-log" className="grid-col-span-activity flex flex-col gap-stack-md min-w-0">
               <ActivityLog
                 timeline={state?.incident_timeline || []}
-                runbookMemory={state?.runbook_memory}
-                escalationTier={state?.escalation_tier}
-                servicesAtRisk={state?.services_at_risk}
+                isSimRunning={isSimRunning}
+                forceSpinner={isWaitingForReset}
               />
             </div>
 
-            <div className="grid-col-span-metrics flex flex-col gap-stack-md min-w-0">
-              <MetricsGauges services={state?.services || {}} />
+            {/* Live Score */}
+            <div id="live-score" className="grid-col-span-metrics flex flex-col gap-stack-md min-w-0">
+              <h3 className="font-label-caps text-label-caps text-on-surface-variant uppercase">Live Score</h3>
+              {liveScore && !isWaitingForReset ? (
+                <div className="bg-surface-container-high/40 backdrop-blur-xl border border-primary/20 rounded-xl p-6 flex flex-col items-center">
+                  <div className="flex flex-col items-center mb-6 w-full border-b border-outline-variant/10 pb-4">
+                    <span className="text-xs text-on-surface-variant/70 uppercase tracking-widest font-semibold mb-1">Total Score</span>
+                    <div className="text-6xl font-display font-bold text-primary drop-shadow-md">
+                      {liveScore.score.toFixed(3)}
+                    </div>
+                  </div>
+                  <div className="w-full space-y-2">
+                    {Object.entries(liveScore.breakdown).filter(([key]) => key !== 'memory').map(([key, val]) => {
+                      const maxVals: Record<string, number> = { recovery: 0.35, efficiency: 0.20, diagnostics: 0.15, ordering: 0.20 };
+                      const max = maxVals[key] || 0.2;
+                      const pct = max > 0 ? ((val as number) / max) * 100 : 0;
+                      return (
+                        <div key={key} className="flex items-center gap-2">
+                          <div className="flex items-center gap-1 w-24 group relative cursor-help">
+                            <span className="text-xs text-on-surface-variant/70 capitalize">{key}</span>
+                            <span className="material-symbols-outlined text-xs text-on-surface-variant/40 group-hover:text-primary transition-colors">info</span>
+                            {/* Tooltip */}
+                            <div className="absolute left-0 bottom-full mb-1 hidden group-hover:block w-40 p-2 bg-surface-container-highest border border-outline-variant/20 rounded shadow-lg text-[9px] text-on-surface-variant z-10 font-normal normal-case leading-tight">
+                              {key === 'recovery' && "Speed of restoring healthy service status."}
+                              {key === 'efficiency' && "Minimizing unnecessary commands & actions."}
+                              {key === 'diagnostics' && "Inspecting logs & metrics before acting."}
+                              {key === 'ordering' && "Correct sequence of resolution steps."}
+                            </div>
+                          </div>
+                          <div className="flex-1 h-2 bg-outline-variant/10 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full transition-all duration-500 ${pct >= 90 ? 'bg-green-500' : pct >= 60 ? 'bg-yellow-500' : 'bg-red-500'
+                                }`}
+                              style={{ width: `${Math.min(pct, 100)}%` }}
+                            />
+                          </div>
+                          <span className="text-xs text-on-surface-variant/50 w-10 text-right font-mono">{(val as number).toFixed(2)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-surface-container-high/40 backdrop-blur-xl border border-outline-variant/10 rounded-xl p-6 flex flex-col items-center justify-center text-on-surface-variant/40 gap-2 min-h-[120px]">
+                  {isSimRunning || isWaitingForReset ? (
+                    <>
+                      <div className="w-6 h-6 border-2 border-primary/20 border-t-primary rounded-full animate-spin" />
+                      <p className="text-[11px]">Calculating score…</p>
+                    </>
+                  ) : (
+                    <>
+                      <span className="material-symbols-outlined text-3xl opacity-40">leaderboard</span>
+                      <p className="text-[11px]">Score appears during simulation</p>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
 
-            <div className="grid-col-span-perf flex flex-col gap-stack-md min-w-0 mt-4">
+            <div id="performance" className="grid-col-span-perf flex flex-col gap-stack-md min-w-0 mt-4">
               <PerformanceTrend rewardHistory={rewardHistory} />
+              <IncidentSummaryCard state={state} isSimRunning={isSimRunning} />
             </div>
           </div>
         </main>
       </div>
-
-      {/* Post-Incident Report Modal */}
-      <ReportModal
-        isOpen={showReport}
-        onClose={() => setShowReport(false)}
-        reportContent={reportContent}
-      />
     </div>
   );
 }

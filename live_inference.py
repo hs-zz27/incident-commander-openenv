@@ -27,7 +27,7 @@ BENCHMARK_NAME = "incident_commander_env"
 MAX_RETRIES = 3
 BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
 QWEN_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
-DEFAULT_ADAPTER = os.getenv("ADAPTER_PATH", "trained_model_0p5b_v2")
+DEFAULT_ADAPTER = os.getenv("ADAPTER_PATH", "trained_model_0p5b_v5")
 
 
 def parse_backend_action(

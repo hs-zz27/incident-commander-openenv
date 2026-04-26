@@ -48,17 +48,24 @@ function statusStyle(status: string) {
 
 interface ServiceMapProps {
   services: Record<string, ServiceState>;
+  isInitializing?: boolean;
 }
 
-export default function ServiceMap({ services }: ServiceMapProps) {
+export default function ServiceMap({ services, isInitializing }: ServiceMapProps) {
   const serviceNames = Object.keys(SERVICE_META);
   const hasData = Object.keys(services).length > 0;
 
   return (
     <div className="flex flex-col gap-stack-md h-full">
       <h3 className="font-label-caps text-label-caps text-on-surface-variant uppercase">Core Systems</h3>
-      <div className="bg-[#1E293B]/60 backdrop-blur-xl border border-white/10 rounded-xl overflow-hidden flex flex-col gap-2 p-3 h-full">
-        {serviceNames.map((name) => {
+      <div className="bg-[#1E293B]/60 backdrop-blur-xl border border-white/10 rounded-xl overflow-hidden flex flex-col gap-2 p-3 h-full min-h-[300px]">
+        {isInitializing ? (
+          <div className="flex flex-col items-center justify-center h-full flex-1 gap-2 text-on-surface-variant/40 min-h-[250px]">
+             <div className="w-8 h-8 border-2 border-primary/20 border-t-primary rounded-full animate-spin mb-2" />
+             <p className="font-caption text-caption">Connecting to core systems…</p>
+          </div>
+        ) : (
+          serviceNames.map((name) => {
           const svc = services[name];
           const meta = SERVICE_META[name];
           const style = statusStyle(svc?.status || 'unknown');
@@ -86,7 +93,8 @@ export default function ServiceMap({ services }: ServiceMapProps) {
               </span>
             </div>
           );
-        })}
+        })
+        )}
       </div>
     </div>
   );
