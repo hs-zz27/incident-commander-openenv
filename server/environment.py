@@ -79,6 +79,10 @@ class IncidentCommanderEnvironment:
         self._chaos_guarantee_step: int = 8  # if chaos_mode and no chaos by this step, force one random inject
         # NOTE: keep chaos task-agnostic; no scripted per-task chaos.
 
+        # Write-runbook grace step: when incident resolves, allow one extra step
+        # so the agent can explicitly write a runbook before termination.
+        self._resolved_grace_step: bool = False
+
         # Runbook memory — persistent across episodes (T2-7)
         self._runbook_memory: RunbookMemory = RunbookMemory()
         self._incident_fingerprint: str = ""
@@ -145,6 +149,7 @@ class IncidentCommanderEnvironment:
         self._last_chaos_event = None
         self._last_chaos_event_persistent = None
         self._new_chaos_event_this_step = None
+        self._resolved_grace_step = False
 
         # Initialize chaos agent
         self._chaos_mode = chaos_mode
@@ -314,6 +319,10 @@ class IncidentCommanderEnvironment:
                 metrics_detail=None,
                 log_quality="full",
             )
+
+        # If we were resolved last step, this is the one grace step.
+        grace_active = self._resolved_grace_step
+        self._resolved_grace_step = False
 
         self._state.step_count += 1
         self._last_action_error = None
@@ -503,6 +512,15 @@ class IncidentCommanderEnvironment:
         )
         if all_healthy and curr_health >= 0.95:
             self._state.is_resolved = True
+            # End if runbook already written; otherwise allow one grace step to write it.
+            if action_type == "write_runbook" or self._runbook_written:
+                self._is_done = True
+            else:
+                self._resolved_grace_step = True
+
+        # If we were already resolved coming into this step (grace step),
+        # end the episode after allowing this one action.
+        if grace_active and not self._is_done:
             self._is_done = True
 
         # Check step limit
