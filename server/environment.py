@@ -73,6 +73,11 @@ class IncidentCommanderEnvironment:
         self._chaos_mode: bool = False
         self._chaos_rng: random.Random = random.Random()
         self._last_chaos_event: Optional[str] = None
+        self._last_chaos_event_persistent: Optional[str] = None
+        self._new_chaos_event_this_step: Optional[str] = None
+        # Chaos visibility tuning (pure random, task-agnostic)
+        self._chaos_guarantee_step: int = 8  # if chaos_mode and no chaos by this step, force one random inject
+        # NOTE: keep chaos task-agnostic; no scripted per-task chaos.
 
         # Runbook memory — persistent across episodes (T2-7)
         self._runbook_memory: RunbookMemory = RunbookMemory()
@@ -138,6 +143,8 @@ class IncidentCommanderEnvironment:
         self._inspected_services = set()
         self._prev_health = compute_health_score(self._services)
         self._last_chaos_event = None
+        self._last_chaos_event_persistent = None
+        self._new_chaos_event_this_step = None
 
         # Initialize chaos agent
         self._chaos_mode = chaos_mode
@@ -450,6 +457,7 @@ class IncidentCommanderEnvironment:
 
         # --- Chaos injection (before computing reward) ---
         self._last_chaos_event = None
+        self._new_chaos_event_this_step = None
         if self._chaos_mode:
             chaos_result = self._chaos_agent.maybe_inject(
                 step=self._state.step_count,
@@ -459,17 +467,28 @@ class IncidentCommanderEnvironment:
             )
             if chaos_result:
                 self._last_chaos_event = chaos_result
+                self._last_chaos_event_persistent = chaos_result
+                self._new_chaos_event_this_step = chaos_result
                 self._services = propagate_dependencies(self._services, self._task.name)
+            elif (
+                self._state.step_count >= self._chaos_guarantee_step
+                and len(self._chaos_agent.injected_services) == 0
+            ):
+                forced = self._chaos_agent.force_random_inject(
+                    step=self._state.step_count,
+                    current_services=self._services,
+                    rng=self._chaos_rng,
+                    inspected_services=self._inspected_services,
+                )
+                if forced:
+                    self._last_chaos_event = forced
+                    self._last_chaos_event_persistent = forced
+                    self._new_chaos_event_this_step = forced
+                    self._services = propagate_dependencies(self._services, self._task.name)
 
-        # Scripted chaos for chaos_cascade task: notification fails at step 8
-        if (
-            self._task.name == "chaos_cascade"
-            and self._state.step_count == 8
-            and "notification" not in self._chaos_agent.injected_services
-        ):
-            self._chaos_agent.force_inject("notification", self._services, "oom_crash")
-            self._last_chaos_event = "notification"
-            self._services = propagate_dependencies(self._services, self._task.name)
+        # NOTE: No task-specific scripted chaos. Chaos mode is purely random injection
+        # via ChaosAgent.maybe_inject() (plus the single random guarantee), and should
+        # apply consistently to any task.
 
         # --- Severity escalation tick AFTER action (Audit Fix #5) ---
         # Run tick after action so health_delta reflects agent's impact, not escalation
@@ -700,8 +719,10 @@ class IncidentCommanderEnvironment:
 
         # Build metadata with optional chaos event info and log quality
         obs_metadata: Dict[str, Any] = {}
-        if self._last_chaos_event:
-            obs_metadata["new_chaos_event"] = self._last_chaos_event
+        if self._new_chaos_event_this_step:
+            obs_metadata["new_chaos_event"] = self._new_chaos_event_this_step
+        if self._last_chaos_event_persistent:
+            obs_metadata["last_chaos_event"] = self._last_chaos_event_persistent
         if log_quality != "full":
             obs_metadata["log_quality"] = log_quality
 

@@ -51,8 +51,8 @@ class ChaosAgent:
 
     def __init__(
         self,
-        injection_probability: float = 0.30,
-        min_step: int = 3,
+        injection_probability: float = 0.20,
+        min_step: int = 4,
     ) -> None:
         """
         Args:
