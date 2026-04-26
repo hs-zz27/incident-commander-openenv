@@ -25,6 +25,10 @@ dependencies = [
 
 [project.scripts]
 server = "server.app:main"
+# Training / eval entrypoints (also runnable as `python -m sft_warmstart` after install)
+sft-warmstart = "sft_warmstart:main"
+train-grpo = "train_grpo:main"
+evaluate-trained = "evaluate_trained:main"
 
 [project.optional-dependencies]
 dev = [
@@ -44,6 +48,16 @@ train = [
 
 [tool.setuptools.packages.find]
 include = ["server*"]
+
+# Top-level training scripts (not under server/) — needed for HF/Kaggle `pip install git+...`
+[tool.setuptools]
+py-modules = [
+    "orchestrator",
+    "evaluate",
+    "evaluate_trained",
+    "train_grpo",
+    "sft_warmstart",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
